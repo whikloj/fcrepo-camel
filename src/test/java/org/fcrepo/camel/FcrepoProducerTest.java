@@ -46,11 +46,12 @@ import java.util.List;
 import java.util.Map;
 
 import org.apache.camel.Exchange;
-import org.apache.camel.component.http4.HttpMethods;
+import org.apache.camel.ExtendedExchange;
+import org.apache.camel.component.http.HttpMethods;
 import org.apache.camel.converter.stream.InputStreamCache;
 import org.apache.camel.impl.DefaultCamelContext;
-import org.apache.camel.impl.DefaultExchange;
-import org.apache.camel.impl.DefaultUnitOfWork;
+import org.apache.camel.support.DefaultExchange;
+import org.apache.camel.impl.engine.DefaultUnitOfWork;
 import org.apache.commons.lang3.StringUtils;
 import org.fcrepo.client.DeleteBuilder;
 import org.fcrepo.client.FcrepoClient;
@@ -81,7 +82,7 @@ public class FcrepoProducerTest {
 
     private FcrepoProducer testProducer;
 
-    private Exchange testExchange;
+    private ExtendedExchange testExchange;
 
     @Mock
     private FcrepoClient mockClient, mockClient2;
@@ -652,6 +653,7 @@ public class FcrepoProducerTest {
         uow.beginTransactedBy((Object)tx);
 
         testExchange.getIn().setHeader(FCREPO_IDENTIFIER, path);
+
         testExchange.setUnitOfWork(uow);
 
         when(mockPostBuilder2.perform()).thenReturn(

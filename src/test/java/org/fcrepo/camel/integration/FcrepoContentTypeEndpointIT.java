@@ -17,7 +17,7 @@
  */
 package org.fcrepo.camel.integration;
 
-import static org.apache.camel.Exchange.ACCEPT_CONTENT_TYPE;
+import static org.fcrepo.camel.integration.FcrepoTestUtils.REASSERT_DELAY_MILLIS;
 import static org.fcrepo.camel.integration.FcrepoTestUtils.getFcrepoEndpointUri;
 
 import org.apache.camel.EndpointInject;
@@ -36,16 +36,17 @@ import org.junit.Test;
  */
 public class FcrepoContentTypeEndpointIT extends CamelTestSupport {
 
-    @EndpointInject(uri = "mock:result")
+    @EndpointInject("mock:result")
     protected MockEndpoint resultEndpoint;
 
-    @Produce(uri = "direct:start")
+    @Produce("direct:start")
     public ProducerTemplate template;
 
     @Test
     public void testContentTypeTurtle() throws InterruptedException {
         resultEndpoint.expectedMessagesMatches(e -> e.getIn().getHeader("Content-Type", String.class)
                 .contains("text/turtle"));
+        resultEndpoint.setAssertPeriod(REASSERT_DELAY_MILLIS);
         resultEndpoint.expectedMessageCount(1);
 
         template.sendBody(null);
@@ -57,10 +58,10 @@ public class FcrepoContentTypeEndpointIT extends CamelTestSupport {
     public void testContentTypeN3() throws InterruptedException {
         resultEndpoint.expectedMessagesMatches(e -> e.getIn().getHeader("Content-Type", String.class)
                 .contains("text/turtle"));
-        resultEndpoint.expectedMessageCount(2);
+        resultEndpoint.setAssertPeriod(REASSERT_DELAY_MILLIS);
+        resultEndpoint.expectedMessageCount(1);
 
         template.sendBodyAndHeader(null, "Accept", "application/n-triples");
-        template.sendBodyAndHeader(null, ACCEPT_CONTENT_TYPE, "application/n-triples");
 
         resultEndpoint.assertIsSatisfied();
     }

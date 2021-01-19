@@ -18,6 +18,7 @@
 package org.fcrepo.camel.integration;
 
 import static java.util.UUID.randomUUID;
+import static org.fcrepo.camel.integration.FcrepoTestUtils.REASSERT_DELAY_MILLIS;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -27,7 +28,7 @@ import org.apache.camel.Exchange;
 import org.apache.camel.Produce;
 import org.apache.camel.ProducerTemplate;
 import org.apache.camel.builder.RouteBuilder;
-import org.apache.camel.builder.xml.Namespaces;
+import org.apache.camel.support.builder.Namespaces;
 import org.apache.camel.component.mock.MockEndpoint;
 import org.apache.camel.test.junit4.CamelTestSupport;
 import org.apache.jena.vocabulary.RDF;
@@ -43,16 +44,16 @@ public class FcrepoPutIT extends CamelTestSupport {
 
     private static final String REPOSITORY = "http://fedora.info/definitions/v4/repository#";
 
-    @EndpointInject(uri = "mock:created")
+    @EndpointInject("mock:created")
     protected MockEndpoint createdEndpoint;
 
-    @EndpointInject(uri = "mock:deleted")
+    @EndpointInject("mock:deleted")
     protected MockEndpoint deletedEndpoint;
 
-    @EndpointInject(uri = "mock:result")
+    @EndpointInject("mock:result")
     protected MockEndpoint resultEndpoint;
 
-    @Produce(uri = "direct:start")
+    @Produce("direct:start")
     protected ProducerTemplate template;
 
     @Test
@@ -63,13 +64,16 @@ public class FcrepoPutIT extends CamelTestSupport {
 
         // Assertions
         resultEndpoint.expectedMessageCount(2);
+        resultEndpoint.setAssertPeriod(REASSERT_DELAY_MILLIS);
         resultEndpoint.expectedHeaderReceived(Exchange.CONTENT_TYPE, "application/rdf+xml");
         resultEndpoint.expectedHeaderReceived(Exchange.HTTP_RESPONSE_CODE, 200);
 
         createdEndpoint.expectedMessageCount(2);
+        createdEndpoint.setAssertPeriod(REASSERT_DELAY_MILLIS);
         createdEndpoint.expectedHeaderReceived(Exchange.HTTP_RESPONSE_CODE, 201);
 
         deletedEndpoint.expectedMessageCount(2);
+        deletedEndpoint.setAssertPeriod(REASSERT_DELAY_MILLIS);
         deletedEndpoint.expectedHeaderReceived(Exchange.HTTP_RESPONSE_CODE, 204);
 
         // Setup

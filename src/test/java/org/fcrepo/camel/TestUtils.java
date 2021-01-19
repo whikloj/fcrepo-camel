@@ -57,8 +57,6 @@ class TestUtils {
                 "<http://www.loc.gov/premis/rdf/v1#hasSize> " +
                 "\"1636261\"^^<http://www.w3.org/2001/XMLSchema#long> .\n";
 
-    public static final String serializedJson = "[{\"title\": \"Test title\"}]";
-
     public static final String rdfTriples = "<http://localhost:8080/rest/foo> " +
                    "<http://fedora.info/definitions/v4/repository#mixinTypes> " +
                    "\"fedora:resource\"";
@@ -70,15 +68,9 @@ class TestUtils {
 
     public static final String RDF_XML = "application/rdf+xml";
 
-    public static final String TEXT_TURTLE = "text/turtle";
-
     public static final String N_TRIPLES = "application/n-triples";
 
     public static final String TEXT_PLAIN = "text/plain";
-
-    public static final String RDF_LDPATH = "application/rdf+ldpath";
-
-    public static final String JSON = "application/json";
 
     public static void setField(final Object parent, final String name,
         final Object obj) {

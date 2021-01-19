@@ -18,9 +18,9 @@
 package org.fcrepo.camel.integration;
 
 import static org.fcrepo.camel.FcrepoProducer.DEFAULT_CONTENT_TYPE;
+import static org.fcrepo.camel.integration.FcrepoTestUtils.REASSERT_DELAY_MILLIS;
 
 import org.apache.camel.EndpointInject;
-import org.apache.camel.Exchange;
 import org.apache.camel.Produce;
 import org.apache.camel.ProducerTemplate;
 import org.apache.camel.builder.RouteBuilder;
@@ -36,19 +36,19 @@ import org.junit.Test;
  */
 public class FcrepoContentTypeHeaderIT extends CamelTestSupport {
 
-    @EndpointInject(uri = "mock:result")
+    @EndpointInject("mock:result")
     protected MockEndpoint resultEndpoint;
 
-    @Produce(uri = "direct:start")
+    @Produce("direct:start")
     protected ProducerTemplate template;
 
     @Test
     public void testContentTypeJson() throws InterruptedException {
         resultEndpoint.expectedHeaderReceived("Content-Type", "application/ld+json");
-        resultEndpoint.expectedMessageCount(2);
+        resultEndpoint.setAssertPeriod(REASSERT_DELAY_MILLIS);
+        resultEndpoint.expectedMessageCount(1);
 
         template.sendBodyAndHeader(null, "Accept", "application/ld+json");
-        template.sendBodyAndHeader(null, Exchange.ACCEPT_CONTENT_TYPE, "application/ld+json");
 
         resultEndpoint.assertIsSatisfied();
     }
@@ -56,10 +56,10 @@ public class FcrepoContentTypeHeaderIT extends CamelTestSupport {
     @Test
     public void testContentTypeRdfXml() throws InterruptedException {
         resultEndpoint.expectedHeaderReceived("Content-Type", "application/rdf+xml");
-        resultEndpoint.expectedMessageCount(2);
+        resultEndpoint.setAssertPeriod(REASSERT_DELAY_MILLIS);
+        resultEndpoint.expectedMessageCount(1);
 
         template.sendBodyAndHeader(null, "Accept", "application/rdf+xml");
-        template.sendBodyAndHeader(null, Exchange.ACCEPT_CONTENT_TYPE, "application/rdf+xml");
 
         resultEndpoint.assertIsSatisfied();
     }
@@ -67,10 +67,10 @@ public class FcrepoContentTypeHeaderIT extends CamelTestSupport {
     @Test
     public void testContentTypeNTriples() throws InterruptedException  {
         resultEndpoint.expectedHeaderReceived("Content-Type", "application/n-triples");
-        resultEndpoint.expectedMessageCount(2);
+        resultEndpoint.setAssertPeriod(REASSERT_DELAY_MILLIS);
+        resultEndpoint.expectedMessageCount(1);
 
         template.sendBodyAndHeader(null, "Accept", "application/n-triples");
-        template.sendBodyAndHeader(null, Exchange.ACCEPT_CONTENT_TYPE, "application/n-triples");
 
         resultEndpoint.assertIsSatisfied();
     }
@@ -79,10 +79,10 @@ public class FcrepoContentTypeHeaderIT extends CamelTestSupport {
     public void testContentTypeTurtle() throws InterruptedException {
         resultEndpoint.expectedMessagesMatches(e -> e.getIn().getHeader("Content-Type", String.class)
                 .contains("text/turtle"));
-        resultEndpoint.expectedMessageCount(2);
+        resultEndpoint.setAssertPeriod(REASSERT_DELAY_MILLIS);
+        resultEndpoint.expectedMessageCount(1);
 
         template.sendBodyAndHeader(null, "Accept", "text/turtle");
-        template.sendBodyAndHeader(null, Exchange.ACCEPT_CONTENT_TYPE, "text/turtle");
 
         resultEndpoint.assertIsSatisfied();
     }
@@ -91,10 +91,10 @@ public class FcrepoContentTypeHeaderIT extends CamelTestSupport {
     public void testContentTypeN3() throws InterruptedException {
         resultEndpoint.expectedMessagesMatches(e -> e.getIn().getHeader("Content-Type", String.class)
                 .contains("text/rdf+n3"));
-        resultEndpoint.expectedMessageCount(2);
+        resultEndpoint.setAssertPeriod(REASSERT_DELAY_MILLIS);
+        resultEndpoint.expectedMessageCount(1);
 
         template.sendBodyAndHeader(null, "Accept", "text/rdf+n3");
-        template.sendBodyAndHeader(null, Exchange.ACCEPT_CONTENT_TYPE, "text/rdf+n3");
 
         resultEndpoint.assertIsSatisfied();
     }
@@ -103,6 +103,7 @@ public class FcrepoContentTypeHeaderIT extends CamelTestSupport {
     @Test
     public void testContentTypeDefault() throws InterruptedException {
         resultEndpoint.expectedHeaderReceived("Content-Type", DEFAULT_CONTENT_TYPE);
+        resultEndpoint.setAssertPeriod(REASSERT_DELAY_MILLIS);
         resultEndpoint.expectedMessageCount(1);
 
         template.sendBody(null);

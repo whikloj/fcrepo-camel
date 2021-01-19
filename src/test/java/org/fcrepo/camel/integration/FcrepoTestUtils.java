@@ -30,20 +30,20 @@ import static java.lang.System.getProperty;
  */
 public final class FcrepoTestUtils {
 
+    /** How long (in milliseconds) after the initial check to recheck message counts. */
+    public static final Long REASSERT_DELAY_MILLIS = 200L;
+
     /** Fedora username */
-    public static final String FCREPO_USERNAME =
-            getProperty("fcrepo.authUsername", "fedoraAdmin");
+    public static final String FCREPO_USERNAME = getProperty("fcrepo.authUsername", "fedoraAdmin");
 
     /** Fedora password */
-    public static final String FCREPO_PASSWORD =
-            getProperty("fcrepo.authPassword", "fedoraAdmin");
+    public static final String FCREPO_PASSWORD = getProperty("fcrepo.authPassword", "fedoraAdmin");
 
     /** Authorization username/pass query string for camel http and fcrepo endpoints. */
     public static final String AUTH_QUERY_PARAMS =
             format("?authUsername=%s&authPassword=%s", FCREPO_USERNAME, FCREPO_PASSWORD);
 
-    private static final int FCREPO_PORT = parseInt(getProperty(
-            "fcrepo.dynamic.test.port", "8080"));
+    private static final int FCREPO_PORT = parseInt(getProperty("fcrepo.dynamic.test.port", "8080"));
 
     /**
      * This is a utility class; the constructor is off-limits

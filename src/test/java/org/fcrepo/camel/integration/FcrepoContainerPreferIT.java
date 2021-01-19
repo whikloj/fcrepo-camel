@@ -17,6 +17,8 @@
  */
 package org.fcrepo.camel.integration;
 
+import static org.fcrepo.camel.integration.FcrepoTestUtils.REASSERT_DELAY_MILLIS;
+
 import java.util.HashMap;
 import java.util.Map;
 
@@ -25,7 +27,7 @@ import org.apache.camel.Exchange;
 import org.apache.camel.Produce;
 import org.apache.camel.ProducerTemplate;
 import org.apache.camel.builder.RouteBuilder;
-import org.apache.camel.builder.xml.Namespaces;
+import org.apache.camel.support.builder.Namespaces;
 import org.apache.camel.component.mock.MockEndpoint;
 import org.apache.camel.test.junit4.CamelTestSupport;
 import org.apache.jena.vocabulary.RDF;
@@ -43,43 +45,48 @@ public class FcrepoContainerPreferIT extends CamelTestSupport {
 
     private static final String LDP = "http://www.w3.org/ns/ldp#";
 
-    @EndpointInject(uri = "mock:created")
+    @EndpointInject("mock:created")
     protected MockEndpoint createdEndpoint;
 
-    @EndpointInject(uri = "mock:filter")
+    @EndpointInject("mock:filter")
     protected MockEndpoint filteredEndpoint;
 
-    @EndpointInject(uri = "mock:container")
+    @EndpointInject("mock:container")
     protected MockEndpoint containerEndpoint;
 
-    @EndpointInject(uri = "mock:verifyGone")
+    @EndpointInject("mock:verifyGone")
     protected MockEndpoint goneEndpoint;
 
-    @EndpointInject(uri = "mock:deleted")
+    @EndpointInject("mock:deleted")
     protected MockEndpoint deletedEndpoint;
 
-    @Produce(uri = "direct:filter")
+    @Produce("direct:filter")
     protected ProducerTemplate template;
 
     @Test
     public void testGetContainer() throws InterruptedException {
         // Assertions
         createdEndpoint.expectedMessageCount(2);
+        createdEndpoint.setAssertPeriod(REASSERT_DELAY_MILLIS);
         createdEndpoint.expectedHeaderReceived(Exchange.HTTP_RESPONSE_CODE, 201);
 
         containerEndpoint.expectedMessageCount(1);
+        containerEndpoint.setAssertPeriod(REASSERT_DELAY_MILLIS);
         containerEndpoint.expectedHeaderReceived(Exchange.CONTENT_TYPE, "application/rdf+xml");
         containerEndpoint.expectedHeaderReceived(Exchange.HTTP_RESPONSE_CODE, 200);
 
         filteredEndpoint.expectedMessageCount(4);
+        filteredEndpoint.setAssertPeriod(REASSERT_DELAY_MILLIS);
         filteredEndpoint.expectedHeaderReceived(Exchange.CONTENT_TYPE, "application/rdf+xml");
         filteredEndpoint.expectedHeaderReceived(Exchange.HTTP_RESPONSE_CODE, 200);
 
         deletedEndpoint.expectedMessageCount(2);
+        deletedEndpoint.setAssertPeriod(REASSERT_DELAY_MILLIS);
         deletedEndpoint.expectedBodiesReceived(null, null);
         deletedEndpoint.expectedHeaderReceived(Exchange.HTTP_RESPONSE_CODE, 204);
 
         goneEndpoint.expectedMessageCount(2);
+        goneEndpoint.setAssertPeriod(REASSERT_DELAY_MILLIS);
         goneEndpoint.expectedHeaderReceived(Exchange.HTTP_RESPONSE_CODE, 410);
 
         final Map<String, Object> headers = new HashMap<>();

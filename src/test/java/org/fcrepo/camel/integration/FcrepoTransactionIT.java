@@ -17,29 +17,35 @@
  */
 package org.fcrepo.camel.integration;
 
-import static org.fcrepo.camel.integration.FcrepoTestUtils.FCREPO_USERNAME;
 import static org.fcrepo.camel.integration.FcrepoTestUtils.FCREPO_PASSWORD;
+import static org.fcrepo.camel.integration.FcrepoTestUtils.FCREPO_USERNAME;
+import static org.fcrepo.camel.integration.FcrepoTestUtils.REASSERT_DELAY_MILLIS;
 
 import java.util.HashMap;
 import java.util.Map;
+
+import javax.naming.Context;
+
+import org.fcrepo.camel.FcrepoHeaders;
+import org.fcrepo.camel.FcrepoTransactionManager;
+import org.fcrepo.client.FcrepoOperationFailedException;
 
 import org.apache.camel.EndpointInject;
 import org.apache.camel.Exchange;
 import org.apache.camel.Produce;
 import org.apache.camel.ProducerTemplate;
 import org.apache.camel.builder.RouteBuilder;
-import org.apache.camel.builder.xml.Namespaces;
-import org.apache.camel.builder.xml.XPathBuilder;
 import org.apache.camel.component.mock.MockEndpoint;
-import org.apache.camel.impl.JndiRegistry;
+import org.apache.camel.language.xpath.XPathBuilder;
+import org.apache.camel.spi.Registry;
 import org.apache.camel.spring.spi.SpringTransactionPolicy;
+import org.apache.camel.support.DefaultRegistry;
+import org.apache.camel.support.builder.Namespaces;
+import org.apache.camel.support.jndi.JndiBeanRepository;
+import org.apache.camel.support.jndi.JndiContext;
 import org.apache.camel.test.junit4.CamelTestSupport;
 import org.apache.jena.vocabulary.RDF;
-import org.fcrepo.camel.FcrepoHeaders;
-import org.fcrepo.camel.FcrepoTransactionManager;
-import org.fcrepo.client.FcrepoOperationFailedException;
 import org.junit.Test;
-import org.junit.Before;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -56,74 +62,75 @@ public class FcrepoTransactionIT extends CamelTestSupport {
 
     private FcrepoTransactionManager txMgr;
 
-    @EndpointInject(uri = "mock:created")
+    @EndpointInject("mock:created")
     protected MockEndpoint createdEndpoint;
 
-    @EndpointInject(uri = "mock:transactedput")
+    @EndpointInject("mock:transactedput")
     protected MockEndpoint midtransactionEndpoint;
 
-    @EndpointInject(uri = "mock:notfound")
+    @EndpointInject("mock:notfound")
     protected MockEndpoint notfoundEndpoint;
 
-    @EndpointInject(uri = "mock:verified")
+    @EndpointInject("mock:verified")
     protected MockEndpoint verifiedEndpoint;
 
-    @EndpointInject(uri = "mock:transacted")
+    @EndpointInject("mock:transacted")
     protected MockEndpoint transactedEndpoint;
 
-    @EndpointInject(uri = "mock:rollback")
+    @EndpointInject("mock:rollback")
     protected MockEndpoint rollbackEndpoint;
 
-    @EndpointInject(uri = "mock:deleted")
+    @EndpointInject("mock:deleted")
     protected MockEndpoint deletedEndpoint;
 
-    @EndpointInject(uri = "mock:missing")
+    @EndpointInject("mock:missing")
     protected MockEndpoint missingEndpoint;
 
-    @Produce(uri = "direct:create")
+    @Produce("direct:create")
     protected ProducerTemplate template;
 
-    @Before
-    public void setUp() throws Exception {
-        super.setUp();
-
-        txTemplate = new TransactionTemplate(txMgr);
-        txTemplate.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRED);
-        txTemplate.afterPropertiesSet();
-    }
-
     @Override
-    protected JndiRegistry createRegistry() throws Exception {
-        final JndiRegistry reg = super.createRegistry();
-
+    protected Registry createCamelRegistry() throws Exception {
         txMgr = new FcrepoTransactionManager();
         txMgr.setBaseUrl(FcrepoTestUtils.getFcrepoBaseUrl());
         txMgr.setAuthUsername(FCREPO_USERNAME);
         txMgr.setAuthPassword(FCREPO_PASSWORD);
-        reg.bind("txManager", txMgr);
+
+        txTemplate = new TransactionTemplate(txMgr);
+        txTemplate.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRED);
+        txTemplate.afterPropertiesSet();
 
         final SpringTransactionPolicy txPolicy = new SpringTransactionPolicy();
         txPolicy.setTransactionManager(txMgr);
         txPolicy.setPropagationBehaviorName("PROPAGATION_REQUIRED");
-        reg.bind("required", txPolicy);
 
-        return reg;
+        final Context context = new JndiContext();
+        context.bind("txManager", txMgr);
+        context.bind("required", txPolicy);
+
+        final JndiBeanRepository jndi = new JndiBeanRepository(context);
+        return new DefaultRegistry(jndi);
     }
 
     @Test
     public void testTransaction() throws InterruptedException {
         // Assertions
         deletedEndpoint.expectedMessageCount(4);
+        deletedEndpoint.setAssertPeriod(REASSERT_DELAY_MILLIS);
         deletedEndpoint.expectedHeaderReceived(Exchange.HTTP_RESPONSE_CODE, 204);
 
         transactedEndpoint.expectedMessageCount(1);
+        transactedEndpoint.setAssertPeriod(REASSERT_DELAY_MILLIS);
 
         verifiedEndpoint.expectedMessageCount(3);
+        verifiedEndpoint.setAssertPeriod(REASSERT_DELAY_MILLIS);
 
         midtransactionEndpoint.expectedMessageCount(3);
+        midtransactionEndpoint.setAssertPeriod(REASSERT_DELAY_MILLIS);
         midtransactionEndpoint.expectedHeaderReceived(Exchange.HTTP_RESPONSE_CODE, 201);
 
         notfoundEndpoint.expectedMessageCount(6);
+        notfoundEndpoint.setAssertPeriod(REASSERT_DELAY_MILLIS);
         notfoundEndpoint.expectedHeaderReceived(Exchange.HTTP_RESPONSE_CODE, 404);
 
         // Start the transaction
@@ -165,16 +172,21 @@ public class FcrepoTransactionIT extends CamelTestSupport {
     public void testTransactionWithRollback() throws InterruptedException {
         // Assertions
         deletedEndpoint.expectedMessageCount(1);
+        deletedEndpoint.setAssertPeriod(REASSERT_DELAY_MILLIS);
         deletedEndpoint.expectedHeaderReceived(Exchange.HTTP_RESPONSE_CODE, 204);
 
         transactedEndpoint.expectedMessageCount(0);
+        transactedEndpoint.setAssertPeriod(REASSERT_DELAY_MILLIS);
 
         verifiedEndpoint.expectedMessageCount(0);
+        verifiedEndpoint.setAssertPeriod(REASSERT_DELAY_MILLIS);
 
         midtransactionEndpoint.expectedMessageCount(2);
+        midtransactionEndpoint.setAssertPeriod(REASSERT_DELAY_MILLIS);
         midtransactionEndpoint.expectedHeaderReceived(Exchange.HTTP_RESPONSE_CODE, 201);
 
         notfoundEndpoint.expectedMessageCount(3);
+        notfoundEndpoint.setAssertPeriod(REASSERT_DELAY_MILLIS);
         notfoundEndpoint.expectedHeaderReceived(Exchange.HTTP_RESPONSE_CODE, 404);
 
         // Start the transaction
@@ -214,7 +226,7 @@ public class FcrepoTransactionIT extends CamelTestSupport {
             @Override
             public void configure() {
                 final String fcrepo_uri = FcrepoTestUtils.getFcrepoEndpointUri();
-                final String http4_uri = fcrepo_uri.replaceAll("fcrepo:", "http4:");
+                final String http4_uri = fcrepo_uri.replaceAll("fcrepo:", "http:");
 
                 final Namespaces ns = new Namespaces("rdf", RDF.uri);
 
@@ -315,8 +327,8 @@ public class FcrepoTransactionIT extends CamelTestSupport {
                 from("direct:verify")
                     .to(fcrepo_uri)
                     .filter().xpath(
-                        "/rdf:RDF/rdf:Description/rdf:type" +
-                        "[@rdf:resource='" + REPOSITORY + "Resource']", ns)
+                    "/rdf:RDF/rdf:Description/rdf:type" +
+                            "[@rdf:resource='" + REPOSITORY + "Resource']", ns)
                     .to("mock:verified");
 
                 from("direct:verifyMissing")

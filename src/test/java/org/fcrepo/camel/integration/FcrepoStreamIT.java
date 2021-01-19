@@ -17,6 +17,8 @@
  */
 package org.fcrepo.camel.integration;
 
+import static org.fcrepo.camel.integration.FcrepoTestUtils.REASSERT_DELAY_MILLIS;
+
 import java.util.HashMap;
 import java.util.Map;
 
@@ -28,8 +30,8 @@ import org.apache.camel.Exchange;
 import org.apache.camel.Produce;
 import org.apache.camel.ProducerTemplate;
 import org.apache.camel.builder.RouteBuilder;
-import org.apache.camel.builder.xml.Namespaces;
-import org.apache.camel.builder.xml.XPathBuilder;
+import org.apache.camel.support.builder.Namespaces;
+import org.apache.camel.language.xpath.XPathBuilder;
 import org.apache.camel.component.mock.MockEndpoint;
 import org.apache.camel.test.junit4.CamelTestSupport;
 import org.fcrepo.camel.FcrepoHeaders;
@@ -45,34 +47,38 @@ public class FcrepoStreamIT extends CamelTestSupport {
 
     final private int children = 200;
 
-    @EndpointInject(uri = "mock:created")
+    @EndpointInject("mock:created")
     protected MockEndpoint createdEndpoint;
 
-    @EndpointInject(uri = "mock:child")
+    @EndpointInject("mock:child")
     protected MockEndpoint childEndpoint;
 
-    @EndpointInject(uri = "mock:verifyGone")
+    @EndpointInject("mock:verifyGone")
     protected MockEndpoint goneEndpoint;
 
-    @EndpointInject(uri = "mock:deleted")
+    @EndpointInject("mock:deleted")
     protected MockEndpoint deletedEndpoint;
 
-    @Produce(uri = "direct:filter")
+    @Produce("direct:filter")
     protected ProducerTemplate template;
 
     @Test
     public void testGetStreamedContainer() throws InterruptedException {
         // Assertions
         createdEndpoint.expectedMessageCount(children + 1);
+        createdEndpoint.setAssertPeriod(REASSERT_DELAY_MILLIS);
         createdEndpoint.expectedHeaderReceived(Exchange.HTTP_RESPONSE_CODE, 201);
 
         childEndpoint.expectedMessageCount(children);
+        childEndpoint.setAssertPeriod(REASSERT_DELAY_MILLIS);
 
         deletedEndpoint.expectedMessageCount(1);
-        deletedEndpoint.allMessages().body().equals(null);
+        deletedEndpoint.setAssertPeriod(REASSERT_DELAY_MILLIS);
+        deletedEndpoint.allMessages().body().isNull();
         deletedEndpoint.expectedHeaderReceived(Exchange.HTTP_RESPONSE_CODE, 204);
 
         goneEndpoint.expectedMessageCount(1);
+        goneEndpoint.setAssertPeriod(REASSERT_DELAY_MILLIS);
         goneEndpoint.expectedHeaderReceived(Exchange.HTTP_RESPONSE_CODE, 410);
 
         final Map<String, Object> headers = new HashMap<>();
@@ -99,7 +105,7 @@ public class FcrepoStreamIT extends CamelTestSupport {
         goneEndpoint.assertIsSatisfied();
         deletedEndpoint.assertIsSatisfied();
 
-        for (Exchange exchange : childEndpoint.getExchanges()) {
+        for (final Exchange exchange : childEndpoint.getExchanges()) {
             Assert.assertTrue(exchange.getIn().getBody(String.class).contains("/stream/"));
         }
     }

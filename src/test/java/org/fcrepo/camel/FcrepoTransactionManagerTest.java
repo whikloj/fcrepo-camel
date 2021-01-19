@@ -88,7 +88,6 @@ public class FcrepoTransactionManagerTest {
         final String authUsername = "foo";
         final String authPassword = "bar";
         final String authHost = "baz";
-        final String transactionId = "1234567890";
 
         assertNull(txMgr.getAuthUsername());
         assertNull(txMgr.getAuthPassword());
@@ -189,7 +188,6 @@ public class FcrepoTransactionManagerTest {
     @Test (expected = CannotCreateTransactionException.class)
     public void testTransactionBeginError() throws FcrepoOperationFailedException {
         final String baseUrl = "http://localhost:8080/rest";
-        final String tx = "tx:1234567890";
         final URI beginUri = URI.create(baseUrl + FcrepoConstants.TRANSACTION);
         final FcrepoTransactionManager txMgr = new FcrepoTransactionManager();
         txMgr.setBaseUrl(baseUrl);
@@ -211,7 +209,6 @@ public class FcrepoTransactionManagerTest {
     @Test (expected = CannotCreateTransactionException.class)
     public void testTransactionBeginNoLocationError() throws FcrepoOperationFailedException {
         final String baseUrl = "http://localhost:8080/rest";
-        final String tx = "tx:1234567890";
         final URI beginUri = URI.create(baseUrl + FcrepoConstants.TRANSACTION);
         final FcrepoTransactionManager txMgr = new FcrepoTransactionManager();
         txMgr.setBaseUrl(baseUrl);
@@ -233,8 +230,6 @@ public class FcrepoTransactionManagerTest {
     @Test (expected = CannotCreateTransactionException.class)
     public void testTransactionNullResponseError() throws FcrepoOperationFailedException {
         final String baseUrl = "http://localhost:8080/rest";
-        final String tx = "tx:1234567890";
-        final URI beginUri = URI.create(baseUrl + FcrepoConstants.TRANSACTION);
         final FcrepoTransactionManager txMgr = new FcrepoTransactionManager();
         txMgr.setBaseUrl(baseUrl);
         TestUtils.setField(txMgr, "fcrepoClient", mockClient);

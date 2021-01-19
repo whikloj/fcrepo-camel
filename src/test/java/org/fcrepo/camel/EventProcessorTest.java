@@ -26,6 +26,7 @@ import static org.fcrepo.camel.FcrepoHeaders.FCREPO_RESOURCE_TYPE;
 import static org.fcrepo.camel.FcrepoHeaders.FCREPO_URI;
 import static org.apache.camel.model.dataformat.JsonLibrary.Jackson;
 import static org.apache.camel.util.ObjectHelper.loadResourceAsStream;
+import static org.fcrepo.camel.integration.FcrepoTestUtils.REASSERT_DELAY_MILLIS;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -45,10 +46,10 @@ import org.junit.Test;
  */
 public class EventProcessorTest extends CamelTestSupport {
 
-    @EndpointInject(uri = "mock:result")
+    @EndpointInject("mock:result")
     protected MockEndpoint resultEndpoint;
 
-    @Produce(uri = "direct:start")
+    @Produce("direct:start")
     protected ProducerTemplate template;
 
     @Test
@@ -76,6 +77,7 @@ public class EventProcessorTest extends CamelTestSupport {
 
         // Confirm that assertions passed
         resultEndpoint.expectedMessageCount(3);
+        resultEndpoint.setAssertPeriod(REASSERT_DELAY_MILLIS);
         resultEndpoint.expectedHeaderReceived(FCREPO_URI, "http://localhost:8080/fcrepo/rest/path/to/resource");
         resultEndpoint.expectedHeaderReceived(FCREPO_RESOURCE_TYPE, resourceTypes);
         resultEndpoint.expectedHeaderReceived(FCREPO_DATE_TIME, "2016-05-19T17:17:39-04:00Z");

@@ -18,19 +18,24 @@
 package org.fcrepo.camel.integration;
 
 import static java.util.UUID.randomUUID;
-import static org.apache.activemq.camel.component.ActiveMQComponent.activeMQComponent;
 import static org.apache.camel.Exchange.CONTENT_TYPE;
 import static org.apache.camel.Exchange.HTTP_METHOD;
+import static org.apache.camel.component.activemq.ActiveMQComponent.activeMQComponent;
+import static org.apache.camel.support.builder.PredicateBuilder.and;
+import static org.apache.camel.support.builder.PredicateBuilder.not;
 import static org.fcrepo.camel.FcrepoHeaders.FCREPO_AGENT;
 import static org.fcrepo.camel.FcrepoHeaders.FCREPO_DATE_TIME;
 import static org.fcrepo.camel.FcrepoHeaders.FCREPO_EVENT_ID;
 import static org.fcrepo.camel.FcrepoHeaders.FCREPO_EVENT_TYPE;
 import static org.fcrepo.camel.FcrepoHeaders.FCREPO_RESOURCE_TYPE;
 import static org.fcrepo.camel.FcrepoHeaders.FCREPO_URI;
-import static org.fcrepo.camel.integration.FcrepoTestUtils.getTurtleDocument;
 import static org.fcrepo.camel.integration.FcrepoTestUtils.AUTH_QUERY_PARAMS;
+import static org.fcrepo.camel.integration.FcrepoTestUtils.REASSERT_DELAY_MILLIS;
+import static org.fcrepo.camel.integration.FcrepoTestUtils.getTurtleDocument;
 
 import java.io.InputStream;
+
+import org.fcrepo.camel.processor.EventProcessor;
 
 import org.apache.camel.EndpointInject;
 import org.apache.camel.Produce;
@@ -38,7 +43,6 @@ import org.apache.camel.ProducerTemplate;
 import org.apache.camel.builder.RouteBuilder;
 import org.apache.camel.component.mock.MockEndpoint;
 import org.apache.camel.test.junit4.CamelTestSupport;
-import org.fcrepo.camel.processor.EventProcessor;
 import org.junit.Test;
 
 /**
@@ -48,10 +52,10 @@ import org.junit.Test;
  */
 public class FcrepoEventStreamIT extends CamelTestSupport {
 
-    @EndpointInject(uri = "mock:results")
+    @EndpointInject("mock:results")
     protected MockEndpoint resultsEndpoint;
 
-    @Produce(uri = "direct:create")
+    @Produce("direct:create")
     protected ProducerTemplate template;
 
     private final String container = randomUUID().toString();
@@ -65,6 +69,7 @@ public class FcrepoEventStreamIT extends CamelTestSupport {
         resetMocks();
 
         resultsEndpoint.expectedMessageCount(10);
+        resultsEndpoint.setAssertPeriod(REASSERT_DELAY_MILLIS);
         resultsEndpoint.allMessages().header(FCREPO_URI).startsWith(baseContainer);
         resultsEndpoint.allMessages().header(FCREPO_RESOURCE_TYPE).contains(fcrepoResource);
         resultsEndpoint.allMessages().header(FCREPO_EVENT_TYPE).isNotNull();
@@ -99,18 +104,20 @@ public class FcrepoEventStreamIT extends CamelTestSupport {
 
                 from("direct:process")
                     .process(new EventProcessor())
-                    .filter()
-                    .simple("${header.CamelFcrepoUri} starts with 'http://localhost:" +
-                            webPort + "/fcrepo/rest/" + container + "'")
+                    // Allow messages from the resource and contained resources, but not TimeMaps.
+                    .filter(and(header(FCREPO_URI).startsWith("http://localhost:" + webPort + "/fcrepo/rest/" +
+                                    container),
+                            not(header(FCREPO_RESOURCE_TYPE).contains("http://fedora.info/definitions/v4/repository" +
+                                    "#TimeMap"))))
                     .to("mock:results");
 
                 from("direct:setup")
                     .setHeader(HTTP_METHOD).constant("PUT")
-                    .to("http4:localhost:" + webPort + "/fcrepo/rest/" + container + AUTH_QUERY_PARAMS);
+                    .to("http:localhost:" + webPort + "/fcrepo/rest/" + container + AUTH_QUERY_PARAMS);
 
                 from("direct:create")
                     .setHeader(HTTP_METHOD).constant("POST")
-                    .to("http4:localhost:" + webPort + "/fcrepo/rest/" + container + AUTH_QUERY_PARAMS);
+                    .to("http:localhost:" + webPort + "/fcrepo/rest/" + container + AUTH_QUERY_PARAMS);
             }
         };
     }
