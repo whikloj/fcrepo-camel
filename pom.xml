@@ -48,8 +48,7 @@
     <slf4j.version>1.7.30</slf4j.version>
     <spring.version>5.2.12.RELEASE</spring.version>
     <fcrepo.version>5.1.1</fcrepo.version>
-    <fcrepo-java-client.version>0.4.0</fcrepo-java-client.version>
-    <!-- jared's -->
+        <!-- jared's -->
     <failsafe.plugin.version>3.0.0-M3</failsafe.plugin.version>
 
     <!-- osgi bundle transitive dependencies (for karaf provisioning) -->
@@ -142,12 +141,6 @@
       <groupId>org.apache.httpcomponents</groupId>
       <artifactId>httpclient</artifactId>
       <version>${httpclient.version}</version>
-    </dependency>
-
-    <dependency>
-      <groupId>org.fcrepo.client</groupId>
-      <artifactId>fcrepo-java-client</artifactId>
-      <version>${fcrepo-java-client.version}</version>
     </dependency>
 
     <!-- logging -->

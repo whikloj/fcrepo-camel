@@ -84,6 +84,7 @@ public class FcrepoHttpBuilder {
     /**
      * Set the username
      * @param username the username
+     * @param password the password
      * @return this builder.
      */
     public FcrepoHttpBuilder setCredentials(final String username, final String password) {

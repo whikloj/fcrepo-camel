@@ -34,7 +34,6 @@ import static org.fcrepo.camel.FcrepoHeaders.FCREPO_BASE_URL;
 import static org.fcrepo.camel.FcrepoHeaders.FCREPO_IDENTIFIER;
 import static org.fcrepo.camel.FcrepoHeaders.FCREPO_PREFER;
 import static org.fcrepo.camel.FcrepoHeaders.FCREPO_URI;
-import static org.fcrepo.client.HttpMethods.GET;
 import static org.slf4j.LoggerFactory.getLogger;
 
 import java.io.BufferedReader;
@@ -50,9 +49,6 @@ import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
-
-import org.fcrepo.client.FcrepoLink;
-import org.fcrepo.client.HttpMethods;
 
 import org.apache.camel.Exchange;
 import org.apache.camel.Message;
@@ -177,7 +173,7 @@ public class FcrepoProducer extends DefaultProducer {
     private void doRequest(final Exchange exchange, final String transaction) throws FcrepoHttpOperationFailedException,
             IOException {
         final Message in = exchange.getIn();
-        final HttpMethods method = getMethod(exchange);
+        final String method = getMethod(exchange);
         final String contentType = getContentType(exchange);
         final String accept = getAccept(exchange);
         final String url = getUrl(exchange, transaction);
@@ -187,22 +183,22 @@ public class FcrepoProducer extends DefaultProducer {
         try {
             final HttpRequestBase request;
             switch (method) {
-                case PATCH:
+                case "PATCH":
                     request = new HttpPatch(getMetadataUri(url));
                     break;
-                case PUT:
+                case "PUT":
                     request = new HttpPut(url);
                     break;
-                case POST:
+                case "POST":
                     request = new HttpPost(url);
                     break;
-                case DELETE:
+                case "DELETE":
                     request = new HttpDelete(url);
                     break;
-                case HEAD:
+                case "HEAD":
                     request = new HttpHead(url);
                     break;
-                case GET:
+                case "GET":
                 default:
                     request = new HttpGet(getUri(endpoint, url));
                     request.setHeader(ACCEPT, accept);
@@ -368,12 +364,12 @@ public class FcrepoProducer extends DefaultProducer {
      *
      * @param exchange the incoming message exchange
      */
-    private HttpMethods getMethod(final Exchange exchange) {
-        final HttpMethods method = exchange.getIn().getHeader(HTTP_METHOD, HttpMethods.class);
+    private String getMethod(final Exchange exchange) {
+        final String method = exchange.getIn().getHeader(HTTP_METHOD, String.class);
         if (method == null) {
-            return GET;
+            return "GET";
         } else {
-            return method;
+            return method.toUpperCase();
         }
     }
 

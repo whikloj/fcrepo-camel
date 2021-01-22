@@ -18,7 +18,6 @@
 package org.fcrepo.camel;
 
 import static java.net.URI.create;
-import static java.util.Collections.emptyMap;
 import static java.util.Collections.singletonList;
 import static org.apache.camel.Exchange.CONTENT_TYPE;
 import static org.apache.camel.Exchange.DISABLE_HTTP_STREAM_CACHE;
@@ -53,8 +52,6 @@ import java.net.URI;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-
-import org.fcrepo.client.FcrepoResponse;
 
 import org.apache.camel.Exchange;
 import org.apache.camel.ExtendedExchange;
@@ -463,9 +460,7 @@ public class FcrepoProducerTest {
 
     @Test
     public void testDeleteProducer() throws Exception {
-        final URI uri = create(TestUtils.baseUrl);
         final int status = SC_NO_CONTENT;
-        final FcrepoResponse deleteResponse = new FcrepoResponse(uri, status, emptyMap(), null);
 
         init();
 

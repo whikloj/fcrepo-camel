@@ -26,7 +26,7 @@ import java.util.StringTokenizer;
  * A class representing the value of an HTTP Link header
  *
  * Originally in fcrepo-camel, then fcrepo-java-client, now back in fcrepo-camel.
- * @see org.fcrepo.client.FcrepoLink
+ * See org.fcrepo.client.FcrepoLink
  *
  * @author Aaron Coburn
  * @author bbpennel

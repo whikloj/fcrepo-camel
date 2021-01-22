@@ -23,7 +23,7 @@ import java.net.URI;
  * A failure exception for Fcrepo Camel Http requests to Fedora.
  *
  * Based off the FcrepoOperationFailedException from fcrepo-java-client.
- * @see org.fcrepo.client.FcrepoOperationFailedException
+ * see org.fcrepo.client.FcrepoOperationFailedException
  *
  * @author whikloj
  */
