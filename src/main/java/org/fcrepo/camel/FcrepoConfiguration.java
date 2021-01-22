@@ -82,7 +82,7 @@ public class FcrepoConfiguration implements Cloneable {
     public FcrepoConfiguration clone() {
         try {
             return (FcrepoConfiguration) super.clone();
-        } catch (CloneNotSupportedException e) {
+        } catch (final CloneNotSupportedException e) {
             throw new RuntimeCamelException(e);
         }
     }
@@ -192,7 +192,10 @@ public class FcrepoConfiguration implements Cloneable {
      * @return the host realm used for repository authentication
      */
     public String getAuthHost() {
-        return authHost;
+        if (authHost != null) {
+            return authHost;
+        }
+        return getAuthHostFromBaseUrl();
     }
 
     /**
@@ -304,5 +307,12 @@ public class FcrepoConfiguration implements Cloneable {
         return fixity;
     }
 
+    private String getAuthHostFromBaseUrl() {
+        String noScheme = getBaseUrl().replaceAll("^https?://", "");
+        while (noScheme.contains("/")) {
+            noScheme = noScheme.substring(0, noScheme.lastIndexOf("/"));
+        }
+        return noScheme;
+    }
 
 }

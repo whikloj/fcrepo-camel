@@ -52,15 +52,30 @@ public final class FcrepoTestUtils {
     }
 
     /**
+     * Retrieve the host for preemptive authentication.
+     * @return string of the hostname
+     */
+    public static String getBaseHost() {
+        if (FCREPO_PORT == 80) {
+            return "localhost";
+        }
+        return "localhost:" + FCREPO_PORT;
+    }
+
+    /**
      * Retrieve the baseUrl for the fcrepo instance
      *
      * @return string containing base url
      */
     public static String getFcrepoBaseUrl() {
-        if (FCREPO_PORT == 80) {
-            return "http://localhost/fcrepo/rest";
-        }
-        return "http://localhost:" + FCREPO_PORT + "/fcrepo/rest";
+        return "http://" + getBaseHost() + getFcrepoContext() + "/rest";
+    }
+
+    /**
+     * @return The context from the url.
+     */
+    public static String getFcrepoContext() {
+        return "/fcrepo";
     }
 
     /**
@@ -69,10 +84,7 @@ public final class FcrepoTestUtils {
      * @return string containing endpoint uri
      */
     public static String getFcrepoEndpointUri() {
-        if (FCREPO_PORT == 80) {
-            return "fcrepo://localhost/fcrepo/rest" + AUTH_QUERY_PARAMS;
-        }
-        return "fcrepo://localhost:" + FCREPO_PORT + "/fcrepo/rest" + AUTH_QUERY_PARAMS;
+        return "fcrepo://" + getBaseHost() + getFcrepoContext() + "/rest" + AUTH_QUERY_PARAMS;
     }
 
     /**
@@ -81,10 +93,7 @@ public final class FcrepoTestUtils {
      * @return string containing endpoint uri
      */
     public static String getFcrepoEndpointUriWithScheme() {
-        if (FCREPO_PORT == 80) {
-            return "fcrepo:http://localhost/fcrepo/rest" + AUTH_QUERY_PARAMS;
-        }
-        return "fcrepo:http://localhost:" + FCREPO_PORT + "/fcrepo/rest" + AUTH_QUERY_PARAMS;
+        return "fcrepo:http://" + getBaseHost() + getFcrepoContext() + "/rest" + AUTH_QUERY_PARAMS;
     }
 
     /**

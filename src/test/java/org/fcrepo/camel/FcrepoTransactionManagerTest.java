@@ -17,32 +17,34 @@
  */
 package org.fcrepo.camel;
 
-import static java.util.Collections.emptyMap;
-import static java.util.Collections.singletonList;
-import static java.util.Collections.singletonMap;
+import static org.apache.http.HttpHeaders.LOCATION;
+import static org.apache.http.HttpStatus.SC_BAD_REQUEST;
+import static org.apache.http.HttpStatus.SC_CREATED;
+import static org.apache.http.HttpStatus.SC_NO_CONTENT;
+import static org.fcrepo.camel.FcrepoConstants.COMMIT;
+import static org.fcrepo.camel.FcrepoConstants.ROLLBACK;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Matchers.any;
-import static org.mockito.Matchers.eq;
 import static org.mockito.Mockito.when;
 
-import java.io.InputStream;
+import java.io.IOException;
 import java.net.URI;
-import java.util.List;
 
-import org.fcrepo.client.FcrepoClient;
-import org.fcrepo.client.FcrepoOperationFailedException;
-import org.fcrepo.client.FcrepoResponse;
-import org.fcrepo.client.GetBuilder;
-import org.fcrepo.client.HeadBuilder;
-import org.fcrepo.client.PostBuilder;
+import org.apache.http.Header;
+import org.apache.http.StatusLine;
+import org.apache.http.client.methods.CloseableHttpResponse;
+import org.apache.http.client.methods.HttpPost;
+import org.apache.http.client.methods.HttpRequestBase;
+import org.apache.http.client.protocol.HttpClientContext;
+import org.apache.http.impl.client.CloseableHttpClient;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
-import org.mockito.runners.MockitoJUnitRunner;
+import org.mockito.junit.MockitoJUnitRunner;
 import org.springframework.transaction.CannotCreateTransactionException;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.TransactionSystemException;
@@ -52,33 +54,29 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * @author Aaron Coburn
+ * @author whikloj
  */
-@RunWith(MockitoJUnitRunner.class)
+@RunWith(MockitoJUnitRunner.Silent.class)
 public class FcrepoTransactionManagerTest {
 
     @Mock
-    private FcrepoClient mockClient;
+    private CloseableHttpResponse mockPostResponse, mockPostResponse2, mockDeleteResponse;
 
     @Mock
-    private PostBuilder mockPostBuilder, mockPostBuilder2;
+    private CloseableHttpClient mockHttpClient;
 
     @Mock
-    private GetBuilder mockGetBuilder;
+    private Header mockLocationHeader;
 
     @Mock
-    private HeadBuilder mockHeadBuilder;
+    private StatusLine mockCreatedStatus, mockNoContentStatus, mockBadRequestStatus;
 
     @Before
     @SuppressWarnings("unchecked")
     public void setUp() throws Exception {
-        when(mockClient.head(any(URI.class))).thenReturn(mockHeadBuilder);
-        when(mockClient.get(any(URI.class))).thenReturn(mockGetBuilder);
-        when(mockGetBuilder.accept(any(String.class))).thenReturn(mockGetBuilder);
-        when(mockGetBuilder.preferMinimal()).thenReturn(mockGetBuilder);
-        when(mockGetBuilder.preferRepresentation(any(List.class), any(List.class))).thenReturn(mockGetBuilder);
-        when(mockClient.post(any(URI.class))).thenReturn(mockPostBuilder);
-        when(mockPostBuilder.body(any(InputStream.class), any(String.class))).thenReturn(mockPostBuilder);
-        when(mockPostBuilder2.body(any(InputStream.class), any(String.class))).thenReturn(mockPostBuilder2);
+        when(mockCreatedStatus.getStatusCode()).thenReturn(SC_CREATED);
+        when(mockNoContentStatus.getStatusCode()).thenReturn(SC_NO_CONTENT);
+        when(mockBadRequestStatus.getStatusCode()).thenReturn(SC_BAD_REQUEST);
     }
 
     @Test
@@ -91,8 +89,8 @@ public class FcrepoTransactionManagerTest {
 
         assertNull(txMgr.getAuthUsername());
         assertNull(txMgr.getAuthPassword());
-        assertNull(txMgr.getAuthHost());
         assertNull(txMgr.getBaseUrl());
+        assertNull(txMgr.getAuthHost());
 
         txMgr.setBaseUrl(baseUrl);
         txMgr.setAuthUsername(authUsername);
@@ -106,14 +104,15 @@ public class FcrepoTransactionManagerTest {
     }
 
     @Test
-    public void testTransactionCommit() throws FcrepoOperationFailedException {
+    public void testTransactionCommit() throws IOException, TransactionSystemException {
         final String baseUrl = "http://localhost:8080/rest";
         final String tx = "tx:1234567890";
-        final URI commitUri = URI.create(baseUrl + "/" + tx + FcrepoConstants.COMMIT);
+        final String txUrl = baseUrl + "/" + tx;
+        final URI commitUri = URI.create(txUrl + COMMIT);
         final URI beginUri = URI.create(baseUrl + FcrepoConstants.TRANSACTION);
         final FcrepoTransactionManager txMgr = new FcrepoTransactionManager();
         txMgr.setBaseUrl(baseUrl);
-        TestUtils.setField(txMgr, "fcrepoClient", mockClient);
+        TestUtils.setField(txMgr, "httpClient", mockHttpClient);
 
         final TransactionTemplate transactionTemplate = new TransactionTemplate(txMgr);
         final DefaultTransactionDefinition txDef = new DefaultTransactionDefinition(
@@ -122,12 +121,22 @@ public class FcrepoTransactionManagerTest {
         transactionTemplate.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRED);
         transactionTemplate.afterPropertiesSet();
 
-        when(mockClient.post(eq(beginUri))).thenReturn(mockPostBuilder);
-        when(mockClient.post(eq(commitUri))).thenReturn(mockPostBuilder2);
-        when(mockPostBuilder.perform()).thenReturn(
-                new FcrepoResponse(beginUri, 201, singletonMap("Location", singletonList(baseUrl + "/" + tx)), null));
-        when(mockPostBuilder2.perform()).thenReturn(
-                new FcrepoResponse(commitUri, 201, emptyMap(), null));
+        when(mockPostResponse.getFirstHeader(LOCATION)).thenReturn(mockLocationHeader);
+        when(mockLocationHeader.getValue()).thenReturn(txUrl);
+        when(mockPostResponse.getStatusLine()).thenReturn(mockCreatedStatus);
+        when(mockPostResponse.getEntity()).thenReturn(null);
+        when(mockPostResponse2.getFirstHeader(LOCATION)).thenReturn(null);
+        when(mockPostResponse2.getStatusLine()).thenReturn(mockNoContentStatus);
+        when(mockPostResponse2.getEntity()).thenReturn(null);
+        when(mockHttpClient.execute(any(HttpRequestBase.class), any(HttpClientContext.class))).thenAnswer(a -> {
+            final HttpRequestBase req = a.getArgument(0);
+            if (req.getURI().equals(beginUri)) {
+                return mockPostResponse;
+            } else if (req.getURI().equals(commitUri)) {
+                return mockPostResponse2;
+            }
+            return null;
+        });
 
         DefaultTransactionStatus status = (DefaultTransactionStatus)txMgr.getTransaction(txDef);
         FcrepoTransactionObject txObj = (FcrepoTransactionObject)status.getTransaction();
@@ -146,14 +155,16 @@ public class FcrepoTransactionManagerTest {
     }
 
     @Test
-    public void testTransactionRollback() throws FcrepoOperationFailedException {
+    public void testTransactionRollback() throws IOException {
         final String baseUrl = "http://localhost:8080/rest";
         final String tx = "tx:1234567890";
-        final URI commitUri = URI.create(baseUrl + "/" + tx + FcrepoConstants.COMMIT);
+        final String txUrl = baseUrl + "/" + tx;
+        final URI commitUri = URI.create(txUrl + COMMIT);
+        final URI rollbackUri = URI.create(txUrl + ROLLBACK);
         final URI beginUri = URI.create(baseUrl + FcrepoConstants.TRANSACTION);
         final FcrepoTransactionManager txMgr = new FcrepoTransactionManager();
         txMgr.setBaseUrl(baseUrl);
-        TestUtils.setField(txMgr, "fcrepoClient", mockClient);
+        TestUtils.setField(txMgr, "httpClient", mockHttpClient);
 
         final TransactionTemplate transactionTemplate = new TransactionTemplate(txMgr);
         final DefaultTransactionDefinition txDef = new DefaultTransactionDefinition(
@@ -162,12 +173,26 @@ public class FcrepoTransactionManagerTest {
         transactionTemplate.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRED);
         transactionTemplate.afterPropertiesSet();
 
-        when(mockClient.post(eq(beginUri))).thenReturn(mockPostBuilder);
-        when(mockClient.post(eq(commitUri))).thenReturn(mockPostBuilder2);
-        when(mockPostBuilder.perform()).thenReturn(
-                new FcrepoResponse(beginUri, 201, singletonMap("Location", singletonList(baseUrl + "/" + tx)), null));
-        when(mockPostBuilder2.perform()).thenReturn(
-                new FcrepoResponse(commitUri, 201, emptyMap(), null));
+        when(mockPostResponse.getFirstHeader(LOCATION)).thenReturn(mockLocationHeader);
+        when(mockLocationHeader.getValue()).thenReturn(txUrl);
+        when(mockPostResponse.getStatusLine()).thenReturn(mockCreatedStatus);
+        when(mockPostResponse.getEntity()).thenReturn(null);
+        when(mockPostResponse2.getFirstHeader(LOCATION)).thenReturn(null);
+        when(mockPostResponse2.getStatusLine()).thenReturn(mockNoContentStatus);
+        when(mockPostResponse2.getEntity()).thenReturn(null);
+        when(mockDeleteResponse.getFirstHeader(LOCATION)).thenReturn(null);
+        when(mockDeleteResponse.getStatusLine()).thenReturn(mockNoContentStatus);
+        when(mockHttpClient.execute(any(HttpRequestBase.class), any(HttpClientContext.class))).thenAnswer(a -> {
+            final HttpRequestBase req = a.getArgument(0);
+            if (req.getURI().equals(beginUri)) {
+                return mockPostResponse;
+            } else if (req.getURI().equals(commitUri)) {
+                return mockPostResponse2;
+            } else if (req.getURI().equals(rollbackUri)) {
+                return mockDeleteResponse;
+            }
+            return null;
+        });
 
         DefaultTransactionStatus status = (DefaultTransactionStatus)txMgr.getTransaction(txDef);
         FcrepoTransactionObject txObj = (FcrepoTransactionObject)status.getTransaction();
@@ -186,12 +211,11 @@ public class FcrepoTransactionManagerTest {
     }
 
     @Test (expected = CannotCreateTransactionException.class)
-    public void testTransactionBeginError() throws FcrepoOperationFailedException {
+    public void testTransactionBeginError() throws IOException {
         final String baseUrl = "http://localhost:8080/rest";
-        final URI beginUri = URI.create(baseUrl + FcrepoConstants.TRANSACTION);
         final FcrepoTransactionManager txMgr = new FcrepoTransactionManager();
         txMgr.setBaseUrl(baseUrl);
-        TestUtils.setField(txMgr, "fcrepoClient", mockClient);
+        TestUtils.setField(txMgr, "httpClient", mockHttpClient);
 
         final TransactionTemplate transactionTemplate = new TransactionTemplate(txMgr);
         final DefaultTransactionDefinition txDef = new DefaultTransactionDefinition(
@@ -200,19 +224,19 @@ public class FcrepoTransactionManagerTest {
         transactionTemplate.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRED);
         transactionTemplate.afterPropertiesSet();
 
-        when(mockPostBuilder.perform()).thenThrow(
-                new FcrepoOperationFailedException(beginUri, 400, "Bad Request"));
+        when(mockHttpClient.execute(any(HttpPost.class), any(HttpClientContext.class))).thenReturn(mockPostResponse);
+        when(mockPostResponse.getStatusLine()).thenReturn(mockBadRequestStatus);
+        when(mockPostResponse.getFirstHeader(LOCATION)).thenReturn(null);
 
         txMgr.getTransaction(txDef);
     }
 
     @Test (expected = CannotCreateTransactionException.class)
-    public void testTransactionBeginNoLocationError() throws FcrepoOperationFailedException {
+    public void testTransactionBeginNoLocationError() throws IOException {
         final String baseUrl = "http://localhost:8080/rest";
-        final URI beginUri = URI.create(baseUrl + FcrepoConstants.TRANSACTION);
         final FcrepoTransactionManager txMgr = new FcrepoTransactionManager();
         txMgr.setBaseUrl(baseUrl);
-        TestUtils.setField(txMgr, "fcrepoClient", mockClient);
+        TestUtils.setField(txMgr, "httpClient", mockHttpClient);
 
         final TransactionTemplate transactionTemplate = new TransactionTemplate(txMgr);
         final DefaultTransactionDefinition txDef = new DefaultTransactionDefinition(
@@ -221,40 +245,23 @@ public class FcrepoTransactionManagerTest {
         transactionTemplate.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRED);
         transactionTemplate.afterPropertiesSet();
 
-        when(mockPostBuilder.perform()).thenReturn(
-                new FcrepoResponse(beginUri, 201, emptyMap(), null));
-
-        txMgr.getTransaction(txDef);
-    }
-
-    @Test (expected = CannotCreateTransactionException.class)
-    public void testTransactionNullResponseError() throws FcrepoOperationFailedException {
-        final String baseUrl = "http://localhost:8080/rest";
-        final FcrepoTransactionManager txMgr = new FcrepoTransactionManager();
-        txMgr.setBaseUrl(baseUrl);
-        TestUtils.setField(txMgr, "fcrepoClient", mockClient);
-
-        final TransactionTemplate transactionTemplate = new TransactionTemplate(txMgr);
-        final DefaultTransactionDefinition txDef = new DefaultTransactionDefinition(
-                TransactionDefinition.PROPAGATION_REQUIRED);
-
-        transactionTemplate.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRED);
-        transactionTemplate.afterPropertiesSet();
-
-        when(mockPostBuilder.perform()).thenReturn(null);
+        when(mockHttpClient.execute(any(HttpPost.class), any(HttpClientContext.class))).thenReturn(mockPostResponse);
+        when(mockPostResponse.getStatusLine()).thenReturn(mockCreatedStatus);
+        when(mockPostResponse.getFirstHeader(LOCATION)).thenReturn(null);
 
         txMgr.getTransaction(txDef);
     }
 
     @Test (expected = TransactionSystemException.class)
-    public void testTransactionCommitError() throws FcrepoOperationFailedException {
+    public void testTransactionCommitError() throws IOException {
         final String baseUrl = "http://localhost:8080/rest";
         final String tx = "tx:1234567890";
-        final URI commitUri = URI.create(baseUrl + "/" + tx + FcrepoConstants.COMMIT);
+        final String txUrl = baseUrl + "/" + tx;
+        final URI commitUri = URI.create(txUrl + COMMIT);
         final URI beginUri = URI.create(baseUrl + FcrepoConstants.TRANSACTION);
         final FcrepoTransactionManager txMgr = new FcrepoTransactionManager();
         txMgr.setBaseUrl(baseUrl);
-        TestUtils.setField(txMgr, "fcrepoClient", mockClient);
+        TestUtils.setField(txMgr, "httpClient", mockHttpClient);
 
         final TransactionTemplate transactionTemplate = new TransactionTemplate(txMgr);
         final DefaultTransactionDefinition txDef = new DefaultTransactionDefinition(
@@ -263,12 +270,22 @@ public class FcrepoTransactionManagerTest {
         transactionTemplate.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRED);
         transactionTemplate.afterPropertiesSet();
 
-        when(mockClient.post(eq(beginUri))).thenReturn(mockPostBuilder);
-        when(mockClient.post(eq(commitUri))).thenReturn(mockPostBuilder2);
-        when(mockPostBuilder.perform()).thenReturn(
-                new FcrepoResponse(beginUri, 201, singletonMap("Location", singletonList(baseUrl + "/" + tx)), null));
-        when(mockPostBuilder2.perform()).thenThrow(
-                new FcrepoOperationFailedException(commitUri, 400, "Bad Request"));
+        when(mockPostResponse.getFirstHeader(LOCATION)).thenReturn(mockLocationHeader);
+        when(mockLocationHeader.getValue()).thenReturn(txUrl);
+        when(mockPostResponse.getStatusLine()).thenReturn(mockCreatedStatus);
+        when(mockPostResponse.getEntity()).thenReturn(null);
+        when(mockPostResponse2.getFirstHeader(LOCATION)).thenReturn(null);
+        when(mockPostResponse2.getStatusLine()).thenReturn(mockBadRequestStatus);
+        when(mockPostResponse2.getEntity()).thenReturn(null);
+        when(mockHttpClient.execute(any(HttpRequestBase.class), any(HttpClientContext.class))).thenAnswer(a -> {
+            final HttpRequestBase req = a.getArgument(0);
+            if (req.getURI().equals(beginUri)) {
+                return mockPostResponse;
+            } else if (req.getURI().equals(commitUri)) {
+                return mockPostResponse2;
+            }
+            return null;
+        });
 
         DefaultTransactionStatus status = (DefaultTransactionStatus)txMgr.getTransaction(txDef);
 
@@ -281,14 +298,15 @@ public class FcrepoTransactionManagerTest {
     }
 
     @Test (expected = TransactionSystemException.class)
-    public void testTransactionRollbackError() throws FcrepoOperationFailedException {
+    public void testTransactionRollbackError() throws IOException {
         final String baseUrl = "http://localhost:8080/rest";
         final String tx = "tx:1234567890";
-        final URI rollbackUri = URI.create(baseUrl + "/" + tx + FcrepoConstants.ROLLBACK);
+        final String txUrl = baseUrl + "/" + tx;
+        final URI rollbackUri = URI.create(txUrl + FcrepoConstants.ROLLBACK);
         final URI beginUri = URI.create(baseUrl + FcrepoConstants.TRANSACTION);
         final FcrepoTransactionManager txMgr = new FcrepoTransactionManager();
         txMgr.setBaseUrl(baseUrl);
-        TestUtils.setField(txMgr, "fcrepoClient", mockClient);
+        TestUtils.setField(txMgr, "httpClient", mockHttpClient);
 
         final TransactionTemplate transactionTemplate = new TransactionTemplate(txMgr);
         final DefaultTransactionDefinition txDef = new DefaultTransactionDefinition(
@@ -297,12 +315,22 @@ public class FcrepoTransactionManagerTest {
         transactionTemplate.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRED);
         transactionTemplate.afterPropertiesSet();
 
-        when(mockClient.post(eq(beginUri))).thenReturn(mockPostBuilder);
-        when(mockClient.post(eq(rollbackUri))).thenReturn(mockPostBuilder2);
-        when(mockPostBuilder.perform()).thenReturn(
-                new FcrepoResponse(beginUri, 201, singletonMap("Location", singletonList(baseUrl + "/" + tx)), null));
-        when(mockPostBuilder2.perform()).thenThrow(
-                new FcrepoOperationFailedException(rollbackUri, 400, "Bad Request"));
+        when(mockPostResponse.getFirstHeader(LOCATION)).thenReturn(mockLocationHeader);
+        when(mockLocationHeader.getValue()).thenReturn(txUrl);
+        when(mockPostResponse.getStatusLine()).thenReturn(mockCreatedStatus);
+        when(mockPostResponse.getEntity()).thenReturn(null);
+        when(mockDeleteResponse.getFirstHeader(LOCATION)).thenReturn(null);
+        when(mockDeleteResponse.getStatusLine()).thenReturn(mockBadRequestStatus);
+        when(mockDeleteResponse.getEntity()).thenReturn(null);
+        when(mockHttpClient.execute(any(HttpRequestBase.class), any(HttpClientContext.class))).thenAnswer(a -> {
+            final HttpRequestBase req = a.getArgument(0);
+            if (req.getURI().equals(beginUri)) {
+                return mockPostResponse;
+            } else if (req.getURI().equals(rollbackUri)) {
+                return mockDeleteResponse;
+            }
+            return null;
+        });
 
         DefaultTransactionStatus status = (DefaultTransactionStatus)txMgr.getTransaction(txDef);
 

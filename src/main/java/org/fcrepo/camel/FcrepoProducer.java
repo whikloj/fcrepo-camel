@@ -22,28 +22,37 @@ import static java.util.Arrays.stream;
 import static java.util.Collections.emptyList;
 import static java.util.Collections.unmodifiableMap;
 import static java.util.stream.Collectors.toList;
-import static org.apache.camel.Exchange.ACCEPT_CONTENT_TYPE;
 import static org.apache.camel.Exchange.CONTENT_TYPE;
+import static org.apache.camel.Exchange.DISABLE_HTTP_STREAM_CACHE;
 import static org.apache.camel.Exchange.HTTP_METHOD;
 import static org.apache.camel.Exchange.HTTP_RESPONSE_CODE;
-import static org.apache.camel.Exchange.DISABLE_HTTP_STREAM_CACHE;
 import static org.apache.commons.lang3.StringUtils.isBlank;
+import static org.apache.http.HttpHeaders.ACCEPT;
+import static org.apache.http.HttpHeaders.LOCATION;
 import static org.fcrepo.camel.FcrepoConstants.FIXITY;
 import static org.fcrepo.camel.FcrepoHeaders.FCREPO_BASE_URL;
 import static org.fcrepo.camel.FcrepoHeaders.FCREPO_IDENTIFIER;
 import static org.fcrepo.camel.FcrepoHeaders.FCREPO_PREFER;
 import static org.fcrepo.camel.FcrepoHeaders.FCREPO_URI;
 import static org.fcrepo.client.HttpMethods.GET;
-import static org.fcrepo.client.FcrepoClient.client;
 import static org.slf4j.LoggerFactory.getLogger;
 
+import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.net.URI;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.StringJoiner;
 import java.util.function.Function;
+import java.util.function.Predicate;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
+import org.fcrepo.client.FcrepoLink;
+import org.fcrepo.client.HttpMethods;
 
 import org.apache.camel.Exchange;
 import org.apache.camel.Message;
@@ -51,11 +60,20 @@ import org.apache.camel.converter.stream.CachedOutputStream;
 import org.apache.camel.support.DefaultProducer;
 import org.apache.camel.support.ExchangeHelper;
 import org.apache.camel.util.IOHelper;
-import org.fcrepo.client.FcrepoClient;
-import org.fcrepo.client.FcrepoOperationFailedException;
-import org.fcrepo.client.FcrepoResponse;
-import org.fcrepo.client.GetBuilder;
-import org.fcrepo.client.HttpMethods;
+import org.apache.http.Header;
+import org.apache.http.HttpEntity;
+import org.apache.http.client.methods.CloseableHttpResponse;
+import org.apache.http.client.methods.HttpDelete;
+import org.apache.http.client.methods.HttpEntityEnclosingRequestBase;
+import org.apache.http.client.methods.HttpGet;
+import org.apache.http.client.methods.HttpHead;
+import org.apache.http.client.methods.HttpPatch;
+import org.apache.http.client.methods.HttpPost;
+import org.apache.http.client.methods.HttpPut;
+import org.apache.http.client.methods.HttpRequestBase;
+import org.apache.http.client.protocol.HttpClientContext;
+import org.apache.http.entity.InputStreamEntity;
+import org.apache.http.impl.client.CloseableHttpClient;
 import org.slf4j.Logger;
 import org.springframework.transaction.TransactionStatus;
 import org.springframework.transaction.TransactionSystemException;
@@ -79,9 +97,13 @@ public class FcrepoProducer extends DefaultProducer {
 
     private static final String REPOSITORY = "http://fedora.info/definitions/v4/repository#";
 
+    private static final String FEDORA_API = "http://fedora.info/definitions/fcrepo#";
+
     private final FcrepoEndpoint endpoint;
 
-    private FcrepoClient fcrepoClient;
+    private CloseableHttpClient httpClient;
+
+    private HttpClientContext httpContext;
 
     private final TransactionTemplate transactionTemplate;
 
@@ -93,8 +115,8 @@ public class FcrepoProducer extends DefaultProducer {
         prefer.put("PreferMembership", LDP + "PreferMembership");
         prefer.put("PreferMinimalContainer", LDP + "PreferMinimalContainer");
         prefer.put("ServerManaged", REPOSITORY + "ServerManaged");
-        prefer.put("EmbedResources", REPOSITORY + "EmbedResources");
-        prefer.put("InboundReferences", REPOSITORY + "InboundReferences");
+        prefer.put("EmbedResources", "http://www.w3.org/ns/oa#PreferContainedDescriptions");
+        prefer.put("InboundReferences", FEDORA_API + "InboundReferences");
 
         PREFER_PROPERTIES = unmodifiableMap(prefer);
     }
@@ -121,24 +143,18 @@ public class FcrepoProducer extends DefaultProducer {
         super(endpoint);
         this.endpoint = endpoint;
         this.transactionTemplate = endpoint.createTransactionTemplate();
-        final FcrepoClient.FcrepoClientBuilder builder = client()
-                .credentials(endpoint.getAuthUsername(), endpoint.getAuthPassword())
-                .authScope(endpoint.getAuthHost());
-        if (endpoint.getThrowExceptionOnFailure()) {
-            this.fcrepoClient = builder.throwExceptionOnFailure().build();
-        } else {
-            this.fcrepoClient = builder.build();
-        }
+        this.httpClient = endpoint.getHttpClient();
+        this.httpContext = endpoint.getHttpContext();
     }
 
     /**
      * Define how message exchanges are processed.
      *
      * @param exchange the InOut message exchange
-     * @throws FcrepoOperationFailedException when the underlying HTTP request results in an error
+     * @throws IOException when the underlying HTTP request results in an error
      */
     @Override
-    public void process(final Exchange exchange) throws FcrepoOperationFailedException {
+    public void process(final Exchange exchange) throws FcrepoHttpOperationFailedException, IOException {
         if (exchange.isTransacted()) {
             transactionTemplate.execute(new TransactionCallbackWithoutResult() {
                 @Override
@@ -147,7 +163,7 @@ public class FcrepoProducer extends DefaultProducer {
                     final FcrepoTransactionObject tx = (FcrepoTransactionObject)st.getTransaction();
                     try {
                         doRequest(exchange, tx.getSessionId());
-                    } catch (final FcrepoOperationFailedException ex) {
+                    } catch (final IOException | FcrepoHttpOperationFailedException ex) {
                         throw new TransactionSystemException(
                             "Error executing fcrepo request in transaction: ", ex);
                     }
@@ -158,68 +174,136 @@ public class FcrepoProducer extends DefaultProducer {
         }
     }
 
-    private void doRequest(final Exchange exchange, final String transaction) throws FcrepoOperationFailedException {
+    private void doRequest(final Exchange exchange, final String transaction) throws FcrepoHttpOperationFailedException,
+            IOException {
         final Message in = exchange.getIn();
         final HttpMethods method = getMethod(exchange);
         final String contentType = getContentType(exchange);
         final String accept = getAccept(exchange);
         final String url = getUrl(exchange, transaction);
 
-        LOGGER.debug("Fcrepo Request [{}] with method [{}]", url, method);
+        LOGGER.debug("Request [{}] with method [{}]", url, method);
 
-        final FcrepoResponse response;
-
-        switch (method) {
-        case PATCH:
-            response = fcrepoClient.patch(getMetadataUri(url)).body(in.getBody(InputStream.class)).perform();
-            exchange.getIn().setBody(extractResponseBodyAsStream(response.getBody(), exchange));
-            break;
-        case PUT:
-            response = fcrepoClient.put(URI.create(url)).body(in.getBody(InputStream.class), contentType).perform();
-            exchange.getIn().setBody(extractResponseBodyAsStream(response.getBody(), exchange));
-            break;
-        case POST:
-            response = fcrepoClient.post(URI.create(url)).body(in.getBody(InputStream.class), contentType).perform();
-            exchange.getIn().setBody(extractResponseBodyAsStream(response.getBody(), exchange));
-            break;
-        case DELETE:
-            response = fcrepoClient.delete(URI.create(url)).perform();
-            exchange.getIn().setBody(extractResponseBodyAsStream(response.getBody(), exchange));
-            break;
-        case HEAD:
-            response = fcrepoClient.head(URI.create(url)).perform();
-            exchange.getIn().setBody(null);
-            break;
-        case GET:
-        default:
-            final GetBuilder get = fcrepoClient.get(getUri(endpoint, url)).accept(accept);
-            final String preferHeader = in.getHeader(FCREPO_PREFER, "", String.class);
-            if (!preferHeader.isEmpty()) {
-                final FcrepoPrefer prefer = new FcrepoPrefer(preferHeader);
-                if (prefer.isMinimal()) {
-                    response = get.preferMinimal().perform();
-                } else if (prefer.isRepresentation()) {
-                    response = get.preferRepresentation(prefer.getInclude(), prefer.getOmit()).perform();
-                } else {
-                    response = get.perform();
-                }
-            } else {
-                final List<URI> include = getPreferInclude(endpoint);
-                final List<URI> omit = getPreferOmit(endpoint);
-                if (include.isEmpty() && omit.isEmpty()) {
-                    response = get.perform();
-                } else {
-                    response = get.preferRepresentation(include, omit).perform();
+        try {
+            final HttpRequestBase request;
+            switch (method) {
+                case PATCH:
+                    request = new HttpPatch(getMetadataUri(url));
+                    break;
+                case PUT:
+                    request = new HttpPut(url);
+                    break;
+                case POST:
+                    request = new HttpPost(url);
+                    break;
+                case DELETE:
+                    request = new HttpDelete(url);
+                    break;
+                case HEAD:
+                    request = new HttpHead(url);
+                    break;
+                case GET:
+                default:
+                    request = new HttpGet(getUri(endpoint, url));
+                    request.setHeader(ACCEPT, accept);
+                    final String preferHeader = in.getHeader(FCREPO_PREFER, "", String.class);
+                    if (!preferHeader.isEmpty()) {
+                        request.setHeader("Prefer", preferHeader);
+                    } else {
+                        final String endpointPreferHeader = buildPreferHeader();
+                        if (endpointPreferHeader != null) {
+                            request.setHeader("Prefer", endpointPreferHeader);
+                        }
+                    }
+            }
+            LOGGER.debug("request to uri {} is of type {}", request.getURI(), request.getMethod());
+            if (request instanceof HttpEntityEnclosingRequestBase) {
+                final InputStream sourceBody = in.getBody(InputStream.class);
+                if (sourceBody != null) {
+                    LOGGER.debug("source is not null");
+                    if (contentType != null) {
+                        request.setHeader(CONTENT_TYPE, contentType);
+                    } else if (request instanceof HttpPatch) {
+                        request.setHeader(CONTENT_TYPE, "application/sparql-update");
+                    }
+                    ((HttpEntityEnclosingRequestBase) request).setEntity(new InputStreamEntity(sourceBody));
                 }
             }
-            exchange.getIn().setBody(extractResponseBodyAsStream(response.getBody(), exchange));
+            LOGGER.debug("request is {}", request.toString());
+            try (final CloseableHttpResponse resp = httpClient.execute(request, httpContext)) {
+                if (!isValidResponse.test(resp) && endpoint.getThrowExceptionOnFailure()) {
+                    throw new FcrepoHttpOperationFailedException(request.getURI(), resp.getStatusLine().getStatusCode(),
+                            getEntityBodyAsString(resp));
+                }
+                final HttpEntity entity = resp.getEntity();
+                if (request instanceof HttpHead || entity == null) {
+                    exchange.getIn().setBody(null);
+                } else {
+                    exchange.getIn().setBody(extractResponseBodyAsStream(entity.getContent(), exchange));
+                }
+                final String cType = (resp.getFirstHeader(CONTENT_TYPE) == null ? null :
+                        resp.getFirstHeader(CONTENT_TYPE).getValue());
+                exchange.getIn().setHeader(CONTENT_TYPE, cType);
+                exchange.getIn().setHeader(HTTP_RESPONSE_CODE, resp.getStatusLine().getStatusCode());
+            }
+        } catch (final IOException e) {
+            if (endpoint.getThrowExceptionOnFailure()) {
+                throw e;
+            }
         }
-
-        exchange.getIn().setHeader(CONTENT_TYPE, response.getContentType());
-        exchange.getIn().setHeader(HTTP_RESPONSE_CODE, response.getStatusCode());
     }
 
-    private URI getUri(final FcrepoEndpoint endpoint, final String url) throws FcrepoOperationFailedException {
+    /**
+     * Predicate to test for normal response codes.
+     */
+    private Predicate<CloseableHttpResponse> isValidResponse =
+            response -> response.getStatusLine().getStatusCode() > 0 && response.getStatusLine().getStatusCode() < 300;
+
+    /**
+     * Get the response entity content as a string.
+     * @param response the response object
+     * @return the entity body or null
+     */
+    private String getEntityBodyAsString(final CloseableHttpResponse response) {
+        final HttpEntity entity = response.getEntity();
+        if (entity != null) {
+            try (final InputStreamReader isr = new InputStreamReader(entity.getContent())) {
+                return new BufferedReader(isr).lines().collect(Collectors.joining("\n"));
+            } catch (final IOException e) {
+                // Skip if we can't get the message
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Build a Prefer header using any Prefer headers set up on the endpoint.
+     * @return A prefer header string or null if none.
+     */
+    private String buildPreferHeader() {
+        final List<URI> include = getPreferInclude(endpoint);
+        final List<URI> omit = getPreferOmit(endpoint);
+        if (!include.isEmpty() || !omit.isEmpty()) {
+            final StringJoiner preferJoin = new StringJoiner("; ");
+            preferJoin.add("return=representation");
+            if (!include.isEmpty()) {
+                final String tmpI = include.stream().map(URI::toString).collect(Collectors.joining(" "));
+                if (tmpI.length() > 0) {
+                    preferJoin.add("include=\"" + tmpI + "\"");
+                }
+            }
+            if (!omit.isEmpty()) {
+                final String tmpO = omit.stream().map(URI::toString).collect(Collectors.joining(" "));
+                if (tmpO.length() > 0) {
+                    preferJoin.add("omit=\"" + tmpO + "\"");
+                }
+            }
+            return preferJoin.toString();
+        }
+        return null;
+    }
+
+    private URI getUri(final FcrepoEndpoint endpoint, final String url) throws IOException {
         if (endpoint.getFixity()) {
             return URI.create(url + FIXITY);
         } else if (endpoint.getMetadata()) {
@@ -248,13 +332,32 @@ public class FcrepoProducer extends DefaultProducer {
      * Retrieve the resource location from a HEAD request.
      */
     private URI getMetadataUri(final String url)
-            throws FcrepoOperationFailedException {
-        final FcrepoResponse headResponse = fcrepoClient.head(URI.create(url)).perform();
-        if (headResponse.getLocation() != null) {
-            return headResponse.getLocation();
-        } else {
-            return URI.create(url);
+            throws IOException {
+        final HttpHead head = new HttpHead(url);
+        try (final CloseableHttpResponse headResponse = httpClient.execute(head, httpContext)) {
+            if (headResponse.getFirstHeader(LOCATION) != null) {
+                return URI.create(headResponse.getFirstHeader(LOCATION).getValue());
+            }
+            final List<URI> links = this.getLinkHeaders(headResponse, "describedby");
+            if (links != null && links.size() == 1) {
+                return links.get(0);
+            } else {
+                return URI.create(url);
+            }
         }
+
+    }
+
+    /**
+     * Get any link headers with the specified relationship
+     * @param response the Http response
+     * @param relationship the rel to match against
+     * @return list of URIs
+     */
+    private List<URI> getLinkHeaders(final CloseableHttpResponse response, final String relationship) {
+        return Stream.of(response.getHeaders("Link")).map(Header::getValue).map(FcrepoLink::new)
+                .filter(link -> link.getRel().equalsIgnoreCase(relationship))
+                .map(FcrepoLink::getUri).collect(Collectors.toList());
     }
 
 
@@ -319,9 +422,7 @@ public class FcrepoProducer extends DefaultProducer {
      */
     private String getAcceptHeader(final Exchange exchange) {
         final Message in = exchange.getIn();
-        if (!isBlank(in.getHeader(ACCEPT_CONTENT_TYPE, String.class))) {
-            return in.getHeader(ACCEPT_CONTENT_TYPE, String.class);
-        } else if (!isBlank(in.getHeader("Accept", String.class))) {
+        if (!isBlank(in.getHeader("Accept", String.class))) {
             return in.getHeader("Accept", String.class);
         } else {
             return null;
@@ -369,7 +470,7 @@ public class FcrepoProducer extends DefaultProducer {
                 // When the InputStream is closed, the CachedOutputStream will be closed
                 return cos.newStreamCache();
             } catch (final IOException ex) {
-                LOGGER.debug("Error extracting body from http request", ex);
+                LOGGER.error("Error extracting body from http request", ex);
                 return null;
             }
         }

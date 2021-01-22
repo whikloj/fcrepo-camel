@@ -27,8 +27,8 @@ import java.util.Map;
 import javax.naming.Context;
 
 import org.fcrepo.camel.FcrepoHeaders;
+import org.fcrepo.camel.FcrepoHttpOperationFailedException;
 import org.fcrepo.camel.FcrepoTransactionManager;
-import org.fcrepo.client.FcrepoOperationFailedException;
 
 import org.apache.camel.EndpointInject;
 import org.apache.camel.Exchange;
@@ -234,7 +234,7 @@ public class FcrepoTransactionIT extends CamelTestSupport {
                 titleXpath.namespaces(ns);
                 titleXpath.namespace("dc", "http://purl.org/dc/elements/1.1/");
 
-                onException(FcrepoOperationFailedException.class)
+                onException(FcrepoHttpOperationFailedException.class)
                     .handled(true)
                     .to("mock:missing");
 

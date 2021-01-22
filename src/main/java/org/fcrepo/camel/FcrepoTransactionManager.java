@@ -17,18 +17,23 @@
  */
 package org.fcrepo.camel;
 
+import static org.apache.http.HttpHeaders.LOCATION;
+import static org.apache.http.HttpStatus.SC_CREATED;
+import static org.apache.http.HttpStatus.SC_NO_CONTENT;
 import static org.fcrepo.camel.FcrepoConstants.COMMIT;
 import static org.fcrepo.camel.FcrepoConstants.ROLLBACK;
 import static org.fcrepo.camel.FcrepoConstants.TRANSACTION;
-import static org.fcrepo.client.FcrepoClient.client;
 import static org.slf4j.LoggerFactory.getLogger;
 
-import java.io.InputStream;
-import java.net.URI;
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.util.stream.Collectors;
 
-import org.fcrepo.client.FcrepoClient;
-import org.fcrepo.client.FcrepoOperationFailedException;
-import org.fcrepo.client.FcrepoResponse;
+import org.apache.http.client.methods.CloseableHttpResponse;
+import org.apache.http.client.methods.HttpPost;
+import org.apache.http.client.protocol.HttpClientContext;
+import org.apache.http.impl.client.CloseableHttpClient;
 import org.slf4j.Logger;
 import org.springframework.transaction.CannotCreateTransactionException;
 import org.springframework.transaction.TransactionDefinition;
@@ -44,7 +49,9 @@ import org.springframework.transaction.support.DefaultTransactionStatus;
  */
 public class FcrepoTransactionManager extends AbstractPlatformTransactionManager {
 
-    private FcrepoClient fcrepoClient;
+    private CloseableHttpClient httpClient;
+
+    private HttpClientContext httpContext;
 
     private String baseUrl;
 
@@ -133,28 +140,28 @@ public class FcrepoTransactionManager extends AbstractPlatformTransactionManager
      * @return the host realm used for authentication
      */
     public String getAuthHost() {
-        return authHost;
+        if (authHost != null) {
+            return authHost;
+        }
+        return getAuthHostFromBaseUrl();
     }
 
     @Override
     protected void doBegin(final Object transaction, final TransactionDefinition definition) {
-        final FcrepoResponse response;
-        final InputStream is = null;
-        final String contentType = null;
         final FcrepoTransactionObject tx = (FcrepoTransactionObject)transaction;
 
         if (tx.getSessionId() == null) {
-            try {
-                response = getClient().post(URI.create(baseUrl + TRANSACTION))
-                    .body(is, contentType).perform();
-            } catch (final FcrepoOperationFailedException ex) {
-                LOGGER.debug("HTTP Operation failed: ", ex);
-                throw new CannotCreateTransactionException("Could not create fcrepo transaction");
-            }
-
-            if (response != null && response.getLocation() != null) {
-                tx.setSessionId(response.getLocation().toString().substring(baseUrl.length() + 1));
-            } else {
+            final HttpPost txPost = new HttpPost(baseUrl + TRANSACTION);
+            try (final CloseableHttpResponse response = getClient().execute(txPost, getContext())) {
+                if (response.getStatusLine().getStatusCode() == SC_CREATED &&
+                        response.getFirstHeader(LOCATION) != null) {
+                    final String location = response.getFirstHeader(LOCATION).getValue();
+                    tx.setSessionId(location.substring(baseUrl.length() + 1));
+                } else {
+                    LOGGER.debug("Got bad response {}", response.getStatusLine().getStatusCode());
+                    throw new CannotCreateTransactionException("Invalid response while creating transaction");
+                }
+            } catch (final IOException e) {
                 throw new CannotCreateTransactionException("Invalid response while creating transaction");
             }
         }
@@ -163,14 +170,15 @@ public class FcrepoTransactionManager extends AbstractPlatformTransactionManager
     @Override
     protected void doCommit(final DefaultTransactionStatus status) {
         final FcrepoTransactionObject tx = (FcrepoTransactionObject)status.getTransaction();
-        final InputStream is = null;
-        final String contentType = null;
-
-        try {
-            getClient().post(URI.create(baseUrl + "/" + tx.getSessionId() + COMMIT))
-                .body(is, contentType).perform();
-        } catch (final FcrepoOperationFailedException ex) {
-            LOGGER.debug("Transaction commit failed: ", ex);
+        final HttpPost txPut = new HttpPost(baseUrl + "/" + tx.getSessionId() + COMMIT);
+        try (final CloseableHttpResponse response = getClient().execute(txPut, getContext())) {
+            if (response.getStatusLine().getStatusCode() != SC_NO_CONTENT) {
+                LOGGER.debug("Could not commit fcrepo transaction: {}",
+                        debugTxError(response));
+                throw new TransactionSystemException("Could not commit fcrepo transaction");
+            }
+        } catch (final IOException e) {
+            LOGGER.debug("Transaction commit failed: ", e);
             throw new TransactionSystemException("Could not commit fcrepo transaction");
         } finally {
             tx.setSessionId(null);
@@ -180,15 +188,45 @@ public class FcrepoTransactionManager extends AbstractPlatformTransactionManager
     @Override
     protected void doRollback(final DefaultTransactionStatus status) {
         final FcrepoTransactionObject tx = (FcrepoTransactionObject)status.getTransaction();
-
-        try {
-            getClient().post(URI.create(baseUrl + "/" + tx.getSessionId() + ROLLBACK)).perform();
-        } catch (final FcrepoOperationFailedException ex) {
-            LOGGER.debug("Transaction rollback failed: ", ex);
+        final HttpPost txDelete = new HttpPost(baseUrl + "/" + tx.getSessionId() + ROLLBACK);
+        try (final CloseableHttpResponse response = getClient().execute(txDelete, getContext())) {
+            if (response.getStatusLine().getStatusCode() != SC_NO_CONTENT) {
+                LOGGER.debug("Could not rollback fcrepo transaction: {}",
+                        debugTxError(response));
+                throw new TransactionSystemException("Could not rollback fcrepo transaction");
+            }
+        } catch (final IOException e) {
+            LOGGER.debug("Transaction rollback failed: ", e);
             throw new TransactionSystemException("Could not rollback fcrepo transaction");
         } finally {
             tx.setSessionId(null);
         }
+    }
+
+    private String debugTxError(final CloseableHttpResponse response) {
+        final String message;
+        final int responseCode = response.getStatusLine().getStatusCode();
+        switch (responseCode) {
+            case 404:
+                message = "No transaction found with the provided ID.";
+                break;
+            case 410:
+                message = "The transaction had already expired.";
+                break;
+            case 409:
+                String messageBody = null;
+                try (final InputStreamReader isr = new InputStreamReader(response.getEntity().getContent())) {
+                    messageBody = new BufferedReader(isr).lines().collect(Collectors.joining("\n"));
+                } catch (final IOException e) {
+                    // Skip
+                }
+                message = "Error completing your request: " + (messageBody != null ? messageBody : "<message " +
+                        "unavailable>");
+                break;
+            default:
+                message = "Response code " + responseCode + " was completely unexpected.";
+        }
+        return message;
     }
 
     @Override
@@ -196,11 +234,33 @@ public class FcrepoTransactionManager extends AbstractPlatformTransactionManager
         return new FcrepoTransactionObject();
     }
 
-    private FcrepoClient getClient() {
-        if (fcrepoClient == null) {
-            return client().credentials(authUsername, authPassword).authScope(authHost)
-                .throwExceptionOnFailure().build();
+    private CloseableHttpClient getClient() {
+        if (httpClient == null) {
+            httpClient = getBuilder().buildClient();
         }
-        return fcrepoClient;
+        return httpClient;
+    }
+
+    private HttpClientContext getContext() {
+        if (httpContext == null) {
+            httpContext = getBuilder().buildContext();
+        }
+        return httpContext;
+    }
+
+    private FcrepoHttpBuilder getBuilder() {
+        return FcrepoHttpBuilder.create().setCredentials(getAuthUsername(), getAuthPassword())
+                .setAuthHost(getAuthHost());
+    }
+
+    private String getAuthHostFromBaseUrl() {
+        if (getBaseUrl() != null) {
+            String noScheme = getBaseUrl().replaceAll("^https?://", "");
+            while (noScheme.contains("/")) {
+                noScheme = noScheme.substring(0, noScheme.lastIndexOf("/"));
+            }
+            return noScheme;
+        }
+        return null;
     }
 }

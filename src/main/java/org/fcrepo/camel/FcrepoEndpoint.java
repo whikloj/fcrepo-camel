@@ -29,6 +29,8 @@ import org.apache.camel.api.management.ManagedAttribute;
 import org.apache.camel.api.management.ManagedResource;
 import org.apache.camel.spi.UriEndpoint;
 import org.apache.camel.support.DefaultEndpoint;
+import org.apache.http.client.protocol.HttpClientContext;
+import org.apache.http.impl.client.CloseableHttpClient;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.TransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -114,6 +116,24 @@ public class FcrepoEndpoint extends DefaultEndpoint {
         transactionTemplate.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRED);
         transactionTemplate.afterPropertiesSet();
         return transactionTemplate;
+    }
+
+    /**
+     * Create an Http client with current configuration.
+     * @return the client.
+     */
+    public CloseableHttpClient getHttpClient() {
+        return FcrepoHttpBuilder.create().setAuthHost(getAuthHost()).setCredentials(getAuthUsername(),
+                getAuthPassword()).buildClient();
+    }
+
+    /**
+     * Create a http client context with current configuration.
+     * @return the context.
+     */
+    public HttpClientContext getHttpContext() {
+        return FcrepoHttpBuilder.create().setAuthHost(getAuthHost()).setCredentials(getAuthUsername(),
+                getAuthPassword()).buildContext();
     }
 
     /**

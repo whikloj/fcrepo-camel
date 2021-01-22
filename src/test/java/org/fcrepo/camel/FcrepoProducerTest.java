@@ -20,63 +20,84 @@ package org.fcrepo.camel;
 import static java.net.URI.create;
 import static java.util.Collections.emptyMap;
 import static java.util.Collections.singletonList;
-import static java.util.Collections.singletonMap;
-import static org.apache.camel.Exchange.ACCEPT_CONTENT_TYPE;
 import static org.apache.camel.Exchange.CONTENT_TYPE;
 import static org.apache.camel.Exchange.DISABLE_HTTP_STREAM_CACHE;
 import static org.apache.camel.Exchange.HTTP_METHOD;
 import static org.apache.camel.Exchange.HTTP_RESPONSE_CODE;
+import static org.apache.http.HttpHeaders.ACCEPT;
+import static org.apache.http.HttpHeaders.LOCATION;
+import static org.apache.http.HttpStatus.SC_BAD_REQUEST;
+import static org.apache.http.HttpStatus.SC_CREATED;
+import static org.apache.http.HttpStatus.SC_NO_CONTENT;
+import static org.apache.http.HttpStatus.SC_OK;
+import static org.fcrepo.camel.FcrepoConstants.COMMIT;
+import static org.fcrepo.camel.FcrepoConstants.ROLLBACK;
 import static org.fcrepo.camel.FcrepoHeaders.FCREPO_IDENTIFIER;
 import static org.fcrepo.camel.FcrepoHeaders.FCREPO_PREFER;
 import static org.fcrepo.camel.FcrepoProducer.PREFER_PROPERTIES;
 import static org.fcrepo.camel.TestUtils.N_TRIPLES;
+import static org.fcrepo.camel.TestUtils.RDF_XML;
+import static org.fcrepo.camel.TestUtils.TEXT_PLAIN;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.mockito.Matchers.any;
-import static org.mockito.Matchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.io.ByteArrayInputStream;
-import java.io.InputStream;
 import java.io.IOException;
 import java.net.URI;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import org.fcrepo.client.FcrepoResponse;
+
 import org.apache.camel.Exchange;
 import org.apache.camel.ExtendedExchange;
 import org.apache.camel.component.http.HttpMethods;
 import org.apache.camel.converter.stream.InputStreamCache;
 import org.apache.camel.impl.DefaultCamelContext;
-import org.apache.camel.support.DefaultExchange;
 import org.apache.camel.impl.engine.DefaultUnitOfWork;
+import org.apache.camel.support.DefaultExchange;
 import org.apache.commons.lang3.StringUtils;
-import org.fcrepo.client.DeleteBuilder;
-import org.fcrepo.client.FcrepoClient;
-import org.fcrepo.client.FcrepoOperationFailedException;
-import org.fcrepo.client.FcrepoResponse;
-import org.fcrepo.client.GetBuilder;
-import org.fcrepo.client.HeadBuilder;
-import org.fcrepo.client.PatchBuilder;
-import org.fcrepo.client.PostBuilder;
-import org.fcrepo.client.PutBuilder;
+import org.apache.http.Header;
+import org.apache.http.HttpEntity;
+import org.apache.http.StatusLine;
+import org.apache.http.client.methods.CloseableHttpResponse;
+import org.apache.http.client.methods.HttpDelete;
+import org.apache.http.client.methods.HttpGet;
+import org.apache.http.client.methods.HttpHead;
+import org.apache.http.client.methods.HttpPatch;
+import org.apache.http.client.methods.HttpPost;
+import org.apache.http.client.methods.HttpPut;
+import org.apache.http.client.methods.HttpRequestBase;
+import org.apache.http.client.protocol.HttpClientContext;
+import org.apache.http.impl.client.CloseableHttpClient;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.Captor;
 import org.mockito.Mock;
-import org.mockito.runners.MockitoJUnitRunner;
+import org.mockito.junit.MockitoJUnitRunner;
+import org.springframework.transaction.TransactionSystemException;
 
 /**
  * @author acoburn
+ * @author whikloj
  */
-@RunWith(MockitoJUnitRunner.class)
+@RunWith(MockitoJUnitRunner.Silent.class)
 public class FcrepoProducerTest {
 
     private static final String REPOSITORY = "http://fedora.info/definitions/v4/repository#";
 
     private static final String LDP = "http://www.w3.org/ns/ldp#";
+
+    private static final String FEDORA_API = "http://fedora.info/definitions/fcrepo#";
 
     private FcrepoEndpoint testEndpoint;
 
@@ -85,25 +106,25 @@ public class FcrepoProducerTest {
     private ExtendedExchange testExchange;
 
     @Mock
-    private FcrepoClient mockClient, mockClient2;
+    private CloseableHttpClient mockHttpClient;
 
     @Mock
-    private GetBuilder mockGetBuilder, mockGetBuilder2, mockGetBuilder3;
+    private CloseableHttpResponse mockGetResponse, mockHeadResponse, mockDeleteResponse, mockPostResponse,
+            mockPatchResponse, mockPutResponse;
 
     @Mock
-    private HeadBuilder mockHeadBuilder;
+    private HttpEntity mockEntity1, mockEntity2;
 
     @Mock
-    private DeleteBuilder mockDeleteBuilder;
+    private StatusLine mockStatusLine1, mockStatusLine2;
 
     @Mock
-    private PostBuilder mockPostBuilder, mockPostBuilder2, mockPostBuilder3;
+    private Header mockHeader, mockNtripleHeader, mockRdfXmlHeader;
 
-    @Mock
-    private PatchBuilder mockPatchBuilder;
+    @Captor
+    private ArgumentCaptor<HttpRequestBase> requestArgumentCaptor;
 
-    @Mock
-    private PutBuilder mockPutBuilder;
+    private Header[] emptyHeaders = new Header[]{};
 
     @Before
     @SuppressWarnings("unchecked")
@@ -115,69 +136,92 @@ public class FcrepoProducerTest {
         testEndpoint.setBaseUrl("localhost:8080/rest");
         testExchange = new DefaultExchange(new DefaultCamelContext());
         testExchange.getIn().setBody(null);
-        when(mockClient.get(any(URI.class))).thenReturn(mockGetBuilder);
-        when(mockClient2.get(any(URI.class))).thenReturn(mockGetBuilder);
-        when(mockClient2.head(any(URI.class))).thenReturn(mockHeadBuilder);
-        when(mockGetBuilder.accept(any(String.class))).thenReturn(mockGetBuilder);
-        when(mockGetBuilder.preferMinimal()).thenReturn(mockGetBuilder);
-        when(mockGetBuilder.preferRepresentation(any(List.class), any(List.class))).thenReturn(mockGetBuilder);
-        when(mockGetBuilder2.accept(any(String.class))).thenReturn(mockGetBuilder2);
-        when(mockGetBuilder3.accept(any(String.class))).thenReturn(mockGetBuilder3);
-        when(mockClient.head(any(URI.class))).thenReturn(mockHeadBuilder);
-        when(mockClient.delete(any(URI.class))).thenReturn(mockDeleteBuilder);
-        when(mockClient.patch(any(URI.class))).thenReturn(mockPatchBuilder);
-        when(mockClient.post(any(URI.class))).thenReturn(mockPostBuilder);
-        when(mockClient.put(any(URI.class))).thenReturn(mockPutBuilder);
-        when(mockPatchBuilder.body(any(InputStream.class))).thenReturn(mockPatchBuilder);
-        when(mockPostBuilder.body(any(InputStream.class), any(String.class))).thenReturn(mockPostBuilder);
-        when(mockPostBuilder2.body(any(InputStream.class), any(String.class))).thenReturn(mockPostBuilder2);
-        when(mockPostBuilder3.body(any(InputStream.class), any(String.class))).thenReturn(mockPostBuilder3);
-        when(mockPutBuilder.body(any(InputStream.class), any(String.class))).thenReturn(mockPutBuilder);
+
+        when(mockEntity1.getContent()).thenReturn(null);
+        when(mockNtripleHeader.getValue()).thenReturn(N_TRIPLES);
+        when(mockRdfXmlHeader.getValue()).thenReturn(RDF_XML);
+    }
+
+    private void setUpHeadMocks() throws IOException {
+        when(mockHttpClient.execute(any(HttpHead.class), any(HttpClientContext.class))).thenReturn(mockHeadResponse);
+        when(mockHeadResponse.getStatusLine()).thenReturn(mockStatusLine1);
+        when(mockHeadResponse.getHeaders("Link")).thenReturn(emptyHeaders);
+    }
+
+    private void setUpGetMocks() throws IOException {
+        when(mockHttpClient.execute(any(HttpGet.class), any(HttpClientContext.class))).thenReturn(mockGetResponse);
+        when(mockGetResponse.getStatusLine()).thenReturn(mockStatusLine1);
+        when(mockGetResponse.getEntity()).thenReturn(mockEntity1);
+        when(mockGetResponse.getHeaders("Link")).thenReturn(emptyHeaders);
+    }
+
+    private void setUpDeleteMocks() throws IOException {
+        when(mockHttpClient.execute(any(HttpDelete.class), any(HttpClientContext.class))).thenReturn(
+                mockDeleteResponse);
+        when(mockDeleteResponse.getStatusLine()).thenReturn(mockStatusLine1);
+        when(mockDeleteResponse.getEntity()).thenReturn(mockEntity1);
+    }
+
+    private void setUpPostMocks() throws IOException {
+        when(mockHttpClient.execute(any(HttpPost.class), any(HttpClientContext.class))).thenReturn(mockPostResponse);
+        when(mockPostResponse.getStatusLine()).thenReturn(mockStatusLine1);
+        when(mockPostResponse.getEntity()).thenReturn(mockEntity1);
+    }
+
+    private void setUpPatchMocks() throws IOException {
+        when(mockHttpClient.execute(any(HttpPatch.class), any(HttpClientContext.class))).thenReturn(mockPatchResponse);
+        when(mockPatchResponse.getStatusLine()).thenReturn(mockStatusLine1);
+        when(mockPatchResponse.getHeaders("Link")).thenReturn(null);
+    }
+
+    private void setUpPutMocks() throws IOException {
+        when(mockHttpClient.execute(any(HttpPut.class), any(HttpClientContext.class))).thenReturn(mockPutResponse);
+        when(mockPutResponse.getStatusLine()).thenReturn(mockStatusLine1);
+        when(mockPutResponse.getHeaders("Link")).thenReturn(null);
     }
 
     public void init() throws IOException {
         testProducer = new FcrepoProducer(testEndpoint);
-        TestUtils.setField(testProducer, "fcrepoClient", mockClient);
+        TestUtils.setField(testProducer, "httpClient", mockHttpClient);
     }
 
     @Test
     public void testGetProducer() throws Exception {
-        final URI uri = create(TestUtils.baseUrl);
-        final int status = 200;
         final ByteArrayInputStream body = new ByteArrayInputStream(TestUtils.rdfXml.getBytes());
-        final FcrepoResponse headResponse = new FcrepoResponse(uri, 200, emptyMap(), null);
-        final FcrepoResponse getResponse = new FcrepoResponse(uri, status,
-                singletonMap(CONTENT_TYPE, singletonList(TestUtils.RDF_XML)), body);
 
         init();
 
         testExchange.getIn().setHeader(FCREPO_IDENTIFIER, "/foo");
 
-        when(mockHeadBuilder.perform()).thenReturn(headResponse);
-        when(mockGetBuilder.perform()).thenReturn(getResponse);
+        setUpHeadMocks();
+        setUpGetMocks();
+        when(mockStatusLine1.getStatusCode()).thenReturn(SC_OK);
+        when(mockHeadResponse.getFirstHeader(LOCATION)).thenReturn(null);
+        when(mockGetResponse.getFirstHeader(CONTENT_TYPE)).thenReturn(mockRdfXmlHeader);
+        when(mockEntity1.getContent()).thenReturn(body);
 
         testProducer.process(testExchange);
 
         assertEquals(testExchange.getIn().getBody(String.class), TestUtils.rdfXml);
         assertEquals(testExchange.getIn().getHeader(CONTENT_TYPE, String.class), TestUtils.RDF_XML);
-        assertEquals(testExchange.getIn().getHeader(HTTP_RESPONSE_CODE), status);
+        assertEquals(testExchange.getIn().getHeader(HTTP_RESPONSE_CODE), SC_OK);
     }
 
     @Test
     public void testGetAcceptHeaderProducer() throws Exception {
-        final URI uri = create(TestUtils.baseUrl);
         final ByteArrayInputStream body = new ByteArrayInputStream(TestUtils.rdfTriples.getBytes());
-        final FcrepoResponse headResponse = new FcrepoResponse(uri, 200, emptyMap(), null);
-        final FcrepoResponse getResponse = new FcrepoResponse(uri, 200,
-                singletonMap(CONTENT_TYPE, singletonList(N_TRIPLES)), body);
 
         init();
 
         testExchange.getIn().setHeader(FCREPO_IDENTIFIER, "/foo");
         testExchange.getIn().setHeader("Accept", N_TRIPLES);
 
-        when(mockHeadBuilder.perform()).thenReturn(headResponse);
-        when(mockGetBuilder.perform()).thenReturn(getResponse);
+        setUpHeadMocks();
+        setUpGetMocks();
+        when(mockStatusLine1.getStatusCode()).thenReturn(SC_OK);
+        when(mockHeadResponse.getFirstHeader(LOCATION)).thenReturn(null);
+        when(mockGetResponse.getFirstHeader(CONTENT_TYPE)).thenReturn(mockNtripleHeader);
+        when(mockEntity1.getContent()).thenReturn(body);
 
         testProducer.process(testExchange);
 
@@ -187,11 +231,7 @@ public class FcrepoProducerTest {
 
     @Test
     public void testGetPreferHeaderProducer() throws Exception {
-        final URI uri = create(TestUtils.baseUrl);
         final ByteArrayInputStream body = new ByteArrayInputStream(TestUtils.rdfTriples.getBytes());
-        final FcrepoResponse headResponse = new FcrepoResponse(uri, 200, emptyMap(), null);
-        final FcrepoResponse getResponse = new FcrepoResponse(uri, 200,
-                singletonMap(CONTENT_TYPE, singletonList(N_TRIPLES)) , body);
         final String prefer = "return=representation; omit=\"http://www.w3.org/ns/ldp#PreferContainment\";";
 
         init();
@@ -199,8 +239,12 @@ public class FcrepoProducerTest {
         testExchange.getIn().setHeader(FCREPO_IDENTIFIER, "/foo");
         testExchange.getIn().setHeader(FCREPO_PREFER, prefer);
 
-        when(mockHeadBuilder.perform()).thenReturn(headResponse);
-        when(mockGetBuilder.perform()).thenReturn(getResponse);
+        setUpHeadMocks();
+        setUpGetMocks();
+        when(mockStatusLine1.getStatusCode()).thenReturn(SC_OK);
+        when(mockHeadResponse.getFirstHeader(LOCATION)).thenReturn(null);
+        when(mockGetResponse.getFirstHeader(CONTENT_TYPE)).thenReturn(mockNtripleHeader);
+        when(mockEntity1.getContent()).thenReturn(body);
 
         testProducer.process(testExchange);
 
@@ -210,13 +254,8 @@ public class FcrepoProducerTest {
 
     @Test
     public void testGetFixity() throws Exception {
-        final String baseUrl = "http://localhost:8080/rest";
         final String path = "/binary";
-        final URI uri = create(baseUrl + path);
         final ByteArrayInputStream body = new ByteArrayInputStream(TestUtils.fixityTriples.getBytes());
-        final FcrepoResponse headResponse = new FcrepoResponse(uri, 200, emptyMap(), null);
-        final FcrepoResponse getResponse = new FcrepoResponse(uri, 200,
-                singletonMap(CONTENT_TYPE, singletonList(N_TRIPLES)), body);
 
         testEndpoint.setFixity(true);
 
@@ -224,8 +263,12 @@ public class FcrepoProducerTest {
 
         testExchange.getIn().setHeader(FCREPO_IDENTIFIER, path);
 
-        when(mockHeadBuilder.perform()).thenReturn(headResponse);
-        when(mockGetBuilder.perform()).thenReturn(getResponse);
+        setUpHeadMocks();
+        setUpGetMocks();
+        when(mockStatusLine1.getStatusCode()).thenReturn(SC_OK);
+        when(mockHeadResponse.getFirstHeader(LOCATION)).thenReturn(null);
+        when(mockGetResponse.getFirstHeader(CONTENT_TYPE)).thenReturn(mockNtripleHeader);
+        when(mockEntity1.getContent()).thenReturn(body);
 
         testProducer.process(testExchange);
 
@@ -235,13 +278,7 @@ public class FcrepoProducerTest {
 
     @Test
     public void testGetPreferIncludeLongEndpointProducer() throws Exception {
-        final URI uri = create(TestUtils.baseUrl);
         final ByteArrayInputStream body = new ByteArrayInputStream(TestUtils.rdfTriples.getBytes());
-        final FcrepoResponse headResponse = new FcrepoResponse(uri, 200, emptyMap(), null);
-        final FcrepoResponse getResponse = new FcrepoResponse(uri, 200,
-                singletonMap(CONTENT_TYPE, singletonList(N_TRIPLES)), body);
-        final String prefer = "return=representation; " +
-                    "include=\"http://fedora.info/definitions/v4/repository#ServerManaged\";";
 
         testEndpoint.setPreferInclude("http://fedora.info/definitions/v4/repository#ServerManaged");
 
@@ -249,8 +286,12 @@ public class FcrepoProducerTest {
 
         testExchange.getIn().setHeader(FCREPO_IDENTIFIER, "/foo");
 
-        when(mockHeadBuilder.perform()).thenReturn(headResponse);
-        when(mockGetBuilder.perform()).thenReturn(getResponse);
+        setUpHeadMocks();
+        setUpGetMocks();
+        when(mockStatusLine1.getStatusCode()).thenReturn(SC_OK);
+        when(mockHeadResponse.getFirstHeader(LOCATION)).thenReturn(null);
+        when(mockGetResponse.getFirstHeader(CONTENT_TYPE)).thenReturn(mockNtripleHeader);
+        when(mockEntity1.getContent()).thenReturn(body);
 
         testProducer.process(testExchange);
 
@@ -260,12 +301,7 @@ public class FcrepoProducerTest {
 
     @Test
     public void testGetPreferIncludeShortEndpointProducer() throws Exception {
-        final URI uri = create(TestUtils.baseUrl);
         final ByteArrayInputStream body = new ByteArrayInputStream(TestUtils.rdfTriples.getBytes());
-        final FcrepoResponse headResponse = new FcrepoResponse(uri, 200, emptyMap(), null);
-        final FcrepoResponse getResponse = new FcrepoResponse(uri, 200,
-                singletonMap(CONTENT_TYPE, singletonList(N_TRIPLES)), body);
-        final String prefer = "return=representation; include=\"http://www.w3.org/ns/ldp#PreferMembership\";";
 
         testEndpoint.setPreferInclude("PreferMembership");
 
@@ -273,8 +309,12 @@ public class FcrepoProducerTest {
 
         testExchange.getIn().setHeader(FCREPO_IDENTIFIER, "/foo");
 
-        when(mockHeadBuilder.perform()).thenReturn(headResponse);
-        when(mockGetBuilder.perform()).thenReturn(getResponse);
+        setUpHeadMocks();
+        setUpGetMocks();
+        when(mockStatusLine1.getStatusCode()).thenReturn(SC_OK);
+        when(mockHeadResponse.getFirstHeader(LOCATION)).thenReturn(null);
+        when(mockGetResponse.getFirstHeader(CONTENT_TYPE)).thenReturn(mockNtripleHeader);
+        when(mockEntity1.getContent()).thenReturn(body);
 
         testProducer.process(testExchange);
 
@@ -284,12 +324,8 @@ public class FcrepoProducerTest {
 
     @Test
     public void testGetPreferOmitLongEndpointProducer() throws Exception {
-        final URI uri = create(TestUtils.baseUrl);
         final ByteArrayInputStream body = new ByteArrayInputStream(TestUtils.rdfTriples.getBytes());
-        final FcrepoResponse headResponse = new FcrepoResponse(uri, 200, emptyMap(), null);
-        final FcrepoResponse getResponse = new FcrepoResponse(uri, 200,
-                singletonMap(CONTENT_TYPE, singletonList(N_TRIPLES)), body);
-        final String embed = "http://fedora.info/definitions/v4/repository#EmbedResources";
+        final String embed = "http://www.w3.org/ns/oa#PreferContainedDescriptions";
 
         testEndpoint.setPreferOmit(embed);
 
@@ -297,8 +333,12 @@ public class FcrepoProducerTest {
 
         testExchange.getIn().setHeader(FCREPO_IDENTIFIER, "/foo");
 
-        when(mockHeadBuilder.perform()).thenReturn(headResponse);
-        when(mockGetBuilder.perform()).thenReturn(getResponse);
+        setUpHeadMocks();
+        setUpGetMocks();
+        when(mockStatusLine1.getStatusCode()).thenReturn(SC_OK);
+        when(mockHeadResponse.getFirstHeader(LOCATION)).thenReturn(null);
+        when(mockGetResponse.getFirstHeader(CONTENT_TYPE)).thenReturn(mockNtripleHeader);
+        when(mockEntity1.getContent()).thenReturn(body);
 
         testProducer.process(testExchange);
 
@@ -308,12 +348,7 @@ public class FcrepoProducerTest {
 
     @Test
     public void testGetPreferOmitShortEndpointProducer() throws Exception {
-        final URI uri = create(TestUtils.baseUrl);
         final ByteArrayInputStream body = new ByteArrayInputStream(TestUtils.rdfTriples.getBytes());
-        final FcrepoResponse headResponse = new FcrepoResponse(uri, 200, emptyMap(), null);
-        final FcrepoResponse getResponse = new FcrepoResponse(uri, 200,
-                singletonMap(CONTENT_TYPE, singletonList(N_TRIPLES)), body);
-        final String prefer = "return=representation; omit=\"http://www.w3.org/ns/ldp#PreferContainment\";";
 
         testEndpoint.setPreferOmit("PreferContainment");
 
@@ -321,8 +356,12 @@ public class FcrepoProducerTest {
 
         testExchange.getIn().setHeader(FCREPO_IDENTIFIER, "/foo");
 
-        when(mockHeadBuilder.perform()).thenReturn(headResponse);
-        when(mockGetBuilder.perform()).thenReturn(getResponse);
+        setUpHeadMocks();
+        setUpGetMocks();
+        when(mockStatusLine1.getStatusCode()).thenReturn(SC_OK);
+        when(mockHeadResponse.getFirstHeader(LOCATION)).thenReturn(null);
+        when(mockGetResponse.getFirstHeader(CONTENT_TYPE)).thenReturn(mockNtripleHeader);
+        when(mockEntity1.getContent()).thenReturn(body);
 
         testProducer.process(testExchange);
 
@@ -332,11 +371,7 @@ public class FcrepoProducerTest {
 
     @Test
     public void testGetAcceptEndpointProducer() throws Exception {
-        final URI uri = create(TestUtils.baseUrl);
         final ByteArrayInputStream body = new ByteArrayInputStream(TestUtils.rdfTriples.getBytes());
-        final FcrepoResponse headResponse = new FcrepoResponse(uri, 200, emptyMap(), null);
-        final FcrepoResponse getResponse = new FcrepoResponse(uri, 200,
-                singletonMap(CONTENT_TYPE, singletonList(N_TRIPLES)), body);
 
         testEndpoint.setAccept(N_TRIPLES);
 
@@ -344,8 +379,12 @@ public class FcrepoProducerTest {
 
         testExchange.getIn().setHeader(FCREPO_IDENTIFIER, "/foo");
 
-        when(mockHeadBuilder.perform()).thenReturn(headResponse);
-        when(mockGetBuilder.perform()).thenReturn(getResponse);
+        setUpHeadMocks();
+        setUpGetMocks();
+        when(mockStatusLine1.getStatusCode()).thenReturn(SC_OK);
+        when(mockHeadResponse.getFirstHeader(LOCATION)).thenReturn(null);
+        when(mockGetResponse.getFirstHeader(CONTENT_TYPE)).thenReturn(mockNtripleHeader);
+        when(mockEntity1.getContent()).thenReturn(body);
 
         testProducer.process(testExchange);
 
@@ -355,16 +394,16 @@ public class FcrepoProducerTest {
 
     @Test
     public void testGetRootProducer() throws Exception {
-        final URI uri = create("http://localhost:8080/rest");
         final ByteArrayInputStream body = new ByteArrayInputStream(TestUtils.rdfXml.getBytes());
-        final FcrepoResponse headResponse = new FcrepoResponse(uri, 200, emptyMap(), null);
-        final FcrepoResponse getResponse = new FcrepoResponse(uri, 200,
-                singletonMap(CONTENT_TYPE, singletonList(TestUtils.RDF_XML)), body);
 
         init();
 
-        when(mockHeadBuilder.perform()).thenReturn(headResponse);
-        when(mockGetBuilder.perform()).thenReturn(getResponse);
+        setUpHeadMocks();
+        setUpGetMocks();
+        when(mockStatusLine1.getStatusCode()).thenReturn(SC_OK);
+        when(mockHeadResponse.getFirstHeader(LOCATION)).thenReturn(null);
+        when(mockGetResponse.getFirstHeader(CONTENT_TYPE)).thenReturn(mockRdfXmlHeader);
+        when(mockEntity1.getContent()).thenReturn(body);
 
         testProducer.process(testExchange);
 
@@ -374,21 +413,23 @@ public class FcrepoProducerTest {
 
     @Test
     public void testGetBinaryProducer() throws Exception {
-        final URI uri = create(TestUtils.baseUrl);
         final String content = "Foo";
         final ByteArrayInputStream body = new ByteArrayInputStream(content.getBytes());
-        final FcrepoResponse getResponse = new FcrepoResponse(uri, 200,
-                singletonMap(CONTENT_TYPE, singletonList(TestUtils.TEXT_PLAIN)), body);
 
         testEndpoint.setMetadata(false);
 
         init();
 
         testExchange.getIn().setHeader(FCREPO_IDENTIFIER, "/foo");
-        testExchange.getIn().setHeader(ACCEPT_CONTENT_TYPE, TestUtils.TEXT_PLAIN);
+        testExchange.getIn().setHeader(ACCEPT, TestUtils.TEXT_PLAIN);
         testExchange.getIn().setHeader(HTTP_METHOD, HttpMethods.GET);
 
-        when(mockGetBuilder.perform()).thenReturn(getResponse);
+        setUpHeadMocks();
+        setUpGetMocks();
+        when(mockStatusLine1.getStatusCode()).thenReturn(SC_OK);
+        when(mockHeader.getValue()).thenReturn(TEXT_PLAIN);
+        when(mockGetResponse.getFirstHeader(CONTENT_TYPE)).thenReturn(mockHeader);
+        when(mockEntity1.getContent()).thenReturn(body);
 
         testProducer.process(testExchange);
 
@@ -398,23 +439,24 @@ public class FcrepoProducerTest {
 
     @Test
     public void testHeadProducer() throws Exception {
-        final URI uri = create(TestUtils.baseUrl);
         final Map<String, List<String>> headers = new HashMap<>();
         headers.put(CONTENT_TYPE, singletonList(N_TRIPLES));
         headers.put("Link", singletonList("<" + TestUtils.baseUrl + "/bar>; rel=\"describedby\""));
-        final int status = 200;
-        final FcrepoResponse headResponse = new FcrepoResponse(uri, status, headers, null);
+        final int status = SC_OK;
 
         init();
 
         testExchange.getIn().setHeader(FCREPO_IDENTIFIER, "/foo");
         testExchange.getIn().setHeader(HTTP_METHOD, HttpMethods.HEAD);
 
-        when(mockHeadBuilder.perform()).thenReturn(headResponse);
+        setUpHeadMocks();
+        when(mockStatusLine1.getStatusCode()).thenReturn(SC_OK);
+        when(mockHeadResponse.getFirstHeader(LOCATION)).thenReturn(null);
+        when(mockHeadResponse.getFirstHeader(CONTENT_TYPE)).thenReturn(mockNtripleHeader);
 
         testProducer.process(testExchange);
 
-        assertEquals(testExchange.getIn().getBody(), null);
+        assertNull(testExchange.getIn().getBody());
         assertEquals(testExchange.getIn().getHeader(CONTENT_TYPE, String.class), N_TRIPLES);
         assertEquals(testExchange.getIn().getHeader(HTTP_RESPONSE_CODE), status);
     }
@@ -422,7 +464,7 @@ public class FcrepoProducerTest {
     @Test
     public void testDeleteProducer() throws Exception {
         final URI uri = create(TestUtils.baseUrl);
-        final int status = 204;
+        final int status = SC_NO_CONTENT;
         final FcrepoResponse deleteResponse = new FcrepoResponse(uri, status, emptyMap(), null);
 
         init();
@@ -430,30 +472,35 @@ public class FcrepoProducerTest {
         testExchange.getIn().setHeader(FCREPO_IDENTIFIER, "/foo");
         testExchange.getIn().setHeader(HTTP_METHOD, HttpMethods.DELETE);
 
-        when(mockDeleteBuilder.perform()).thenReturn(deleteResponse);
+        setUpDeleteMocks();
+        when(mockStatusLine1.getStatusCode()).thenReturn(status);
+        when(mockDeleteResponse.getFirstHeader(CONTENT_TYPE)).thenReturn(null);
 
         testProducer.process(testExchange);
 
-        assertEquals(testExchange.getIn().getBody(), null);
-        assertEquals(testExchange.getIn().getHeader(CONTENT_TYPE), null);
+        assertNull(testExchange.getIn().getBody());
+        assertNull(testExchange.getIn().getHeader(CONTENT_TYPE));
         assertEquals(testExchange.getIn().getHeader(HTTP_RESPONSE_CODE), status);
     }
 
     @Test
     public void testPostProducer() throws Exception {
-        final URI uri = create(TestUtils.baseUrl);
         final String responseText = TestUtils.baseUrl + "/e8/0b/ab/e80bab60";
-        final int status = 201;
-        final FcrepoResponse postResponse = new FcrepoResponse(uri, status,
-                singletonMap(CONTENT_TYPE, singletonList(TestUtils.TEXT_PLAIN)),
-                new ByteArrayInputStream(responseText.getBytes()));
+        final ByteArrayInputStream body = new ByteArrayInputStream(responseText.getBytes());
+        final int status = SC_CREATED;
 
         init();
 
         testExchange.getIn().setHeader(FCREPO_IDENTIFIER, "/foo");
         testExchange.getIn().setHeader(HTTP_METHOD, HttpMethods.POST);
 
-        when(mockPostBuilder.perform()).thenReturn(postResponse);
+        setUpHeadMocks();
+        setUpPostMocks();
+        when(mockStatusLine1.getStatusCode()).thenReturn(status);
+        when(mockPostResponse.getEntity()).thenReturn(mockEntity1);
+        when(mockEntity1.getContent()).thenReturn(body);
+        when(mockPostResponse.getFirstHeader(CONTENT_TYPE)).thenReturn(mockHeader);
+        when(mockHeader.getValue()).thenReturn(TEXT_PLAIN);
 
         testProducer.process(testExchange);
 
@@ -464,10 +511,7 @@ public class FcrepoProducerTest {
 
     @Test
     public void testPostContentTypeEndpointProducer() throws Exception {
-        final URI uri = create(TestUtils.baseUrl);
-        final int status = 204;
-        final FcrepoResponse headResponse = new FcrepoResponse(uri, 200, emptyMap(), null);
-        final FcrepoResponse postResponse = new FcrepoResponse(uri, status, emptyMap(), null);
+        final int status = SC_NO_CONTENT;
 
         testEndpoint.setContentType(TestUtils.SPARQL_UPDATE);
 
@@ -477,23 +521,24 @@ public class FcrepoProducerTest {
         testExchange.getIn().setHeader(HTTP_METHOD, HttpMethods.POST);
         testExchange.getIn().setBody(new ByteArrayInputStream(TestUtils.sparqlUpdate.getBytes()));
 
-        when(mockHeadBuilder.perform()).thenReturn(headResponse);
-        when(mockPostBuilder.perform()).thenReturn(postResponse);
+        setUpHeadMocks();
+        setUpPostMocks();
+        when(mockStatusLine1.getStatusCode()).thenReturn(SC_OK);
+        when(mockStatusLine2.getStatusCode()).thenReturn(status);
+        when(mockHeadResponse.getFirstHeader(LOCATION)).thenReturn(null);
+        when(mockPostResponse.getStatusLine()).thenReturn(mockStatusLine2);
+        when(mockEntity1.getContent()).thenReturn(null);
 
         testProducer.process(testExchange);
 
-        assertEquals(testExchange.getIn().getBody(), null);
+        assertNull(testExchange.getIn().getBody());
         assertEquals(testExchange.getIn().getHeader(Exchange.HTTP_RESPONSE_CODE), status);
     }
 
     @Test
     public void testPatchProducer() throws Exception {
-        final URI uri = create(TestUtils.baseUrl);
         final String metadata = "<" + TestUtils.baseUrl + "/bar>; rel=\"describedby\"";
-        final int status = 204;
-        final FcrepoResponse headResponse = new FcrepoResponse(uri, 200,
-                singletonMap("Link", singletonList(metadata)), null);
-        final FcrepoResponse patchResponse = new FcrepoResponse(uri, status, emptyMap(), null);
+        final int status = SC_NO_CONTENT;
 
         init();
 
@@ -501,22 +546,35 @@ public class FcrepoProducerTest {
         testExchange.getIn().setHeader(HTTP_METHOD, HttpMethods.PATCH);
         testExchange.getIn().setBody(new ByteArrayInputStream(TestUtils.sparqlUpdate.getBytes()));
 
-        when(mockHeadBuilder.perform()).thenReturn(headResponse);
-        when(mockPatchBuilder.perform()).thenReturn(patchResponse);
+        setUpHeadMocks();
+        setUpPatchMocks();
+        when(mockStatusLine1.getStatusCode()).thenReturn(SC_OK);
+        when(mockStatusLine2.getStatusCode()).thenReturn(status);
+        when(mockHeadResponse.getFirstHeader(LOCATION)).thenReturn(null);
+        when(mockHeadResponse.getHeaders("Link")).thenReturn(new Header[]{mockHeader});
+        when(mockHeader.getValue()).thenReturn(metadata);
+        when(mockPatchResponse.getStatusLine()).thenReturn(mockStatusLine2);
+        when(mockPatchResponse.getEntity()).thenReturn(mockEntity1);
+        when(mockEntity1.getContent()).thenReturn(null);
 
         testProducer.process(testExchange);
 
-        assertEquals(testExchange.getIn().getBody(), null);
+        verify(mockHttpClient, times(2)).execute(requestArgumentCaptor.capture(), any(HttpClientContext.class));
+        final List<HttpRequestBase> requestArgs = requestArgumentCaptor.getAllValues();
+        for (final HttpRequestBase req : requestArgs) {
+            if (req.getMethod().equalsIgnoreCase("HEAD")) {
+                assertEquals(TestUtils.baseUrl, req.getURI().toString());
+            } else {
+                assertEquals(TestUtils.baseUrl + "/bar", req.getURI().toString());
+            }
+        }
+        assertNull(testExchange.getIn().getBody());
         assertEquals(testExchange.getIn().getHeader(Exchange.HTTP_RESPONSE_CODE), status);
     }
 
     @Test
     public void testPutProducer() throws Exception {
-        final URI uri = create(TestUtils.baseUrl);
-        final int status = 201;
-        final FcrepoResponse putResponse = new FcrepoResponse(uri, status,
-                singletonMap(CONTENT_TYPE, singletonList(TestUtils.TEXT_PLAIN)),
-                new ByteArrayInputStream(TestUtils.baseUrl.getBytes()));
+        final int status = SC_CREATED;
 
         init();
 
@@ -524,7 +582,12 @@ public class FcrepoProducerTest {
         testExchange.getIn().setHeader(HTTP_METHOD, HttpMethods.PUT);
         testExchange.getIn().setBody(null);
 
-        when(mockPutBuilder.perform()).thenReturn(putResponse);
+        setUpPutMocks();
+        when(mockPutResponse.getEntity()).thenReturn(mockEntity1);
+        when(mockEntity1.getContent()).thenReturn(new ByteArrayInputStream(TestUtils.baseUrl.getBytes()));
+        when(mockPutResponse.getFirstHeader(CONTENT_TYPE)).thenReturn(mockHeader);
+        when(mockHeader.getValue()).thenReturn(TEXT_PLAIN);
+        when(mockStatusLine1.getStatusCode()).thenReturn(status);
 
         testProducer.process(testExchange);
 
@@ -538,10 +601,9 @@ public class FcrepoProducerTest {
         testProducer = new FcrepoProducer(testEndpoint);
 
         assertEquals(6, PREFER_PROPERTIES.size());
-        final String[] fcrepoPrefer = new String[] { "ServerManaged", "EmbedResources", "InboundReferences" };
-        for (final String s : fcrepoPrefer) {
-            assertEquals(REPOSITORY + s, PREFER_PROPERTIES.get(s));
-        }
+        assertEquals(REPOSITORY + "ServerManaged", PREFER_PROPERTIES.get("ServerManaged"));
+        assertEquals(FEDORA_API + "InboundReferences", PREFER_PROPERTIES.get("InboundReferences"));
+        assertEquals("http://www.w3.org/ns/oa#PreferContainedDescriptions", PREFER_PROPERTIES.get("EmbedResources"));
 
         final String[] ldpPrefer = new String[] { "PreferContainment", "PreferMembership",
             "PreferMinimalContainer" };
@@ -552,12 +614,8 @@ public class FcrepoProducerTest {
 
     @Test
     public void testGetProducerWithScheme() throws Exception {
-        final URI uri = create(TestUtils.baseUrl);
-        final int status = 200;
+        final int status = SC_OK;
         final ByteArrayInputStream body = new ByteArrayInputStream(TestUtils.rdfXml.getBytes());
-        final FcrepoResponse headResponse = new FcrepoResponse(uri, 200, emptyMap(), null);
-        final FcrepoResponse getResponse = new FcrepoResponse(uri, status,
-                singletonMap(CONTENT_TYPE, singletonList(TestUtils.RDF_XML)), body);
 
         // set the baseUrl with an explicit http:// scheme
         testEndpoint.setBaseUrl("http://localhost:8080/rest");
@@ -565,8 +623,14 @@ public class FcrepoProducerTest {
 
         testExchange.getIn().setHeader(FCREPO_IDENTIFIER, "/foo");
 
-        when(mockHeadBuilder.perform()).thenReturn(headResponse);
-        when(mockGetBuilder.perform()).thenReturn(getResponse);
+        setUpHeadMocks();
+        setUpGetMocks();
+        when(mockStatusLine1.getStatusCode()).thenReturn(SC_OK);
+        when(mockHeadResponse.getFirstHeader(LOCATION)).thenReturn(null);
+        when(mockGetResponse.getStatusLine()).thenReturn(mockStatusLine2);
+        when(mockStatusLine2.getStatusCode()).thenReturn(SC_OK);
+        when(mockGetResponse.getFirstHeader(CONTENT_TYPE)).thenReturn(mockRdfXmlHeader);
+        when(mockEntity1.getContent()).thenReturn(body);
 
         testProducer.process(testExchange);
 
@@ -577,12 +641,8 @@ public class FcrepoProducerTest {
 
     @Test
     public void testGetSecureProducer() throws Exception {
-        final URI uri = create(TestUtils.baseUrlSecure);
         final int status = 200;
         final ByteArrayInputStream body = new ByteArrayInputStream(TestUtils.rdfXml.getBytes());
-        final FcrepoResponse headResponse = new FcrepoResponse(uri, 200, emptyMap(), null);
-        final FcrepoResponse getResponse = new FcrepoResponse(uri, status,
-                singletonMap(CONTENT_TYPE, singletonList(TestUtils.RDF_XML)), body);
 
         // set the baseUrl with no scheme but with a secure port
         testEndpoint.setBaseUrl("localhost:443/rest");
@@ -590,8 +650,14 @@ public class FcrepoProducerTest {
 
         testExchange.getIn().setHeader(FCREPO_IDENTIFIER, "/secure");
 
-        when(mockHeadBuilder.perform()).thenReturn(headResponse);
-        when(mockGetBuilder.perform()).thenReturn(getResponse);
+        setUpHeadMocks();
+        setUpGetMocks();
+        when(mockStatusLine1.getStatusCode()).thenReturn(SC_OK);
+        when(mockHeadResponse.getFirstHeader(LOCATION)).thenReturn(null);
+        when(mockGetResponse.getStatusLine()).thenReturn(mockStatusLine2);
+        when(mockStatusLine2.getStatusCode()).thenReturn(SC_OK);
+        when(mockGetResponse.getFirstHeader(CONTENT_TYPE)).thenReturn(mockRdfXmlHeader);
+        when(mockEntity1.getContent()).thenReturn(body);
 
         testProducer.process(testExchange);
 
@@ -602,12 +668,8 @@ public class FcrepoProducerTest {
 
     @Test
     public void testGetSecureProducerWithScheme() throws Exception {
-        final URI uri = create(TestUtils.baseUrlSecureWithoutPort);
         final int status = 200;
         final ByteArrayInputStream body = new ByteArrayInputStream(TestUtils.rdfXml.getBytes());
-        final FcrepoResponse headResponse = new FcrepoResponse(uri, 200, emptyMap(), null);
-        final FcrepoResponse getResponse = new FcrepoResponse(uri, status,
-                singletonMap(CONTENT_TYPE, singletonList(TestUtils.RDF_XML)), body);
 
         // set the baseUrl with explicit scheme but no port
         testEndpoint.setBaseUrl("https://localhost/rest");
@@ -615,8 +677,14 @@ public class FcrepoProducerTest {
 
         testExchange.getIn().setHeader(FCREPO_IDENTIFIER, "/secure");
 
-        when(mockHeadBuilder.perform()).thenReturn(headResponse);
-        when(mockGetBuilder.perform()).thenReturn(getResponse);
+        setUpHeadMocks();
+        setUpGetMocks();
+        when(mockStatusLine1.getStatusCode()).thenReturn(SC_OK);
+        when(mockHeadResponse.getFirstHeader(LOCATION)).thenReturn(null);
+        when(mockGetResponse.getStatusLine()).thenReturn(mockStatusLine2);
+        when(mockStatusLine2.getStatusCode()).thenReturn(SC_OK);
+        when(mockGetResponse.getFirstHeader(CONTENT_TYPE)).thenReturn(mockRdfXmlHeader);
+        when(mockEntity1.getContent()).thenReturn(body);
 
         testProducer.process(testExchange);
 
@@ -631,10 +699,11 @@ public class FcrepoProducerTest {
         final String path = "/transact";
         final String path2 = "/transact2";
         final String tx = "tx:12345";
+        final String txUrl = baseUrl + "/" + tx;
         final URI uri = create(baseUrl + "/" + tx + path);
         final URI uri2 = create(baseUrl + "/" + tx + path2);
-        final URI commitUri = URI.create(baseUrl + "/" + tx + FcrepoConstants.COMMIT);
         final URI beginUri = URI.create(baseUrl + FcrepoConstants.TRANSACTION);
+        final URI commitUri = URI.create(txUrl + COMMIT);
         final int status = 200;
         final ByteArrayInputStream body = new ByteArrayInputStream(TestUtils.rdfXml.getBytes());
         final ByteArrayInputStream body2 = new ByteArrayInputStream(TestUtils.rdfTriples.getBytes());
@@ -644,11 +713,21 @@ public class FcrepoProducerTest {
 
         testEndpoint.setTransactionManager(txMgr);
 
-        when(mockClient2.post(eq(beginUri))).thenReturn(mockPostBuilder2);
-        when(mockClient2.post(eq(commitUri))).thenReturn(mockPostBuilder2);
+        final CloseableHttpResponse mockTxBeginResponse = mock(CloseableHttpResponse.class);
+        final Header mockTxHeader = mock(Header.class);
+        final StatusLine beginTxStatusLine = mock(StatusLine.class);
+        when(mockTxBeginResponse.getFirstHeader(LOCATION)).thenReturn(mockTxHeader);
+        when(mockTxBeginResponse.getStatusLine()).thenReturn(beginTxStatusLine);
+        when(beginTxStatusLine.getStatusCode()).thenReturn(SC_CREATED);
+        when(mockTxHeader.getValue()).thenReturn(txUrl);
+
+        final CloseableHttpResponse mockTxCommitResponse = mock(CloseableHttpResponse.class);
+        final StatusLine commitTxStatusLine = mock(StatusLine.class);
+        when(mockTxCommitResponse.getStatusLine()).thenReturn(commitTxStatusLine);
+        when(commitTxStatusLine.getStatusCode()).thenReturn(SC_NO_CONTENT);
 
         init();
-        TestUtils.setField(txMgr, "fcrepoClient", mockClient2);
+        TestUtils.setField(txMgr, "httpClient", mockHttpClient);
 
         uow.beginTransactedBy((Object)tx);
 
@@ -656,19 +735,51 @@ public class FcrepoProducerTest {
 
         testExchange.setUnitOfWork(uow);
 
-        when(mockPostBuilder2.perform()).thenReturn(
-                new FcrepoResponse(beginUri, 201, singletonMap("Location", singletonList(baseUrl + "/" + tx)), null));
-        when(mockPostBuilder3.perform()).thenReturn(
-                new FcrepoResponse(commitUri, 201, emptyMap(), null));
+        final CloseableHttpResponse mockHead2Response = mock(CloseableHttpResponse.class);
+        final CloseableHttpResponse mockGet2Response = mock(CloseableHttpResponse.class);
+        when(mockHeadResponse.getFirstHeader(LOCATION)).thenReturn(null);
+        when(mockHead2Response.getFirstHeader(LOCATION)).thenReturn(null);
+        when(mockHeadResponse.getStatusLine()).thenReturn(mockStatusLine1);
+        when(mockGetResponse.getStatusLine()).thenReturn(mockStatusLine1);
+        when(mockHead2Response.getStatusLine()).thenReturn(mockStatusLine1);
+        when(mockGet2Response.getStatusLine()).thenReturn(mockStatusLine1);
+        when(mockStatusLine1.getStatusCode()).thenReturn(SC_OK);
 
-        when(mockHeadBuilder.perform()).thenReturn(new FcrepoResponse(uri, 200, emptyMap(), null));
-        when(mockClient.get(eq(uri))).thenReturn(mockGetBuilder2);
-        when(mockClient.get(eq(uri2))).thenReturn(mockGetBuilder3);
+        when(mockGetResponse.getFirstHeader(CONTENT_TYPE)).thenReturn(mockRdfXmlHeader);
+        when(mockGetResponse.getEntity()).thenReturn(mockEntity1);
+        when(mockEntity1.getContent()).thenReturn(body);
+        when(mockGet2Response.getFirstHeader(CONTENT_TYPE)).thenReturn(mockNtripleHeader);
+        when(mockGet2Response.getEntity()).thenReturn(mockEntity2);
+        when(mockEntity2.getContent()).thenReturn(body2);
+        // None of these objects are binaries so there are no "describedby" link headers.
+        when(mockHeadResponse.getHeaders("Link")).thenReturn(emptyHeaders);
+        when(mockHead2Response.getHeaders("Link")).thenReturn(emptyHeaders);
+        when(mockGetResponse.getHeaders("Link")).thenReturn(emptyHeaders);
+        when(mockGet2Response.getHeaders("Link")).thenReturn(emptyHeaders);
 
-        when(mockGetBuilder2.perform()).thenReturn(
-            new FcrepoResponse(uri, status, singletonMap(CONTENT_TYPE, singletonList(TestUtils.RDF_XML)), body));
-        when(mockGetBuilder3.perform()).thenReturn(
-            new FcrepoResponse(uri2, status, singletonMap(CONTENT_TYPE, singletonList(N_TRIPLES)), body2));
+        when(mockHttpClient.execute(any(HttpRequestBase.class), any(HttpClientContext.class))).thenAnswer(I -> {
+                final HttpRequestBase req = I.getArgument(0);
+                if (req.getMethod().equalsIgnoreCase("head")) {
+                    if (req.getURI().equals(uri)) {
+                        return mockHeadResponse;
+                    } else if (req.getURI().equals(uri2)) {
+                        return mockHead2Response;
+                    }
+                } else if (req.getMethod().equalsIgnoreCase("get")) {
+                    if (req.getURI().equals(uri)) {
+                        return mockGetResponse;
+                    } else if (req.getURI().equals(uri2)) {
+                        return mockGet2Response;
+                    }
+                } else if (req.getMethod().equalsIgnoreCase("post")) {
+                    if (req.getURI().equals(beginUri)) {
+                        return mockTxBeginResponse;
+                    } else if (req.getURI().equals(commitUri)) {
+                        return mockTxCommitResponse;
+                    }
+                }
+                return null;
+        });
 
         testProducer.process(testExchange);
 
@@ -677,7 +788,7 @@ public class FcrepoProducerTest {
         assertEquals(TestUtils.rdfXml, testExchange.getIn().getBody(String.class));
 
         testExchange.getIn().setHeader(HTTP_METHOD, "GET");
-        testExchange.getIn().setHeader(ACCEPT_CONTENT_TYPE, N_TRIPLES);
+        testExchange.getIn().setHeader(ACCEPT, N_TRIPLES);
         testExchange.getIn().setHeader(FCREPO_IDENTIFIER, path2);
         testExchange.setUnitOfWork(uow);
         testProducer.process(testExchange);
@@ -686,15 +797,17 @@ public class FcrepoProducerTest {
         assertEquals(TestUtils.rdfTriples, testExchange.getIn().getBody(String.class));
     }
 
-    @Test (expected = RuntimeException.class)
+    @Test(expected = TransactionSystemException.class)
     public void testTransactedProducerWithError() throws Exception {
         final String baseUrl = "http://localhost:8080/rest";
         final String path = "/transact";
         final String path2 = "/transact2";
         final String tx = "tx:12345";
+        final String txUrl = baseUrl + "/" + tx;
         final URI uri = create(baseUrl + "/" + tx + path);
         final URI uri2 = create(baseUrl + "/" + tx + path2);
-        final URI commitUri = URI.create(baseUrl + "/" + tx + FcrepoConstants.COMMIT);
+        final URI commitUri = URI.create(txUrl + COMMIT);
+        final URI rollbackUri = URI.create(txUrl + ROLLBACK);
         final URI beginUri = URI.create(baseUrl + FcrepoConstants.TRANSACTION);
         final int status = 200;
         final ByteArrayInputStream body = new ByteArrayInputStream(TestUtils.rdfXml.getBytes());
@@ -706,27 +819,78 @@ public class FcrepoProducerTest {
         testEndpoint.setTransactionManager(txMgr);
 
         init();
-        TestUtils.setField(txMgr, "fcrepoClient", mockClient2);
+        TestUtils.setField(txMgr, "httpClient", mockHttpClient);
 
         uow.beginTransactedBy((Object)tx);
 
         testExchange.getIn().setHeader(FCREPO_IDENTIFIER, path);
         testExchange.setUnitOfWork(uow);
 
-        when(mockClient2.post(eq(beginUri))).thenReturn(mockPostBuilder2);
-        when(mockClient2.post(eq(commitUri))).thenReturn(mockPostBuilder3);
-        when(mockPostBuilder2.perform()).thenReturn(
-                new FcrepoResponse(beginUri, 201, singletonMap("Location", singletonList(baseUrl + "/" + tx)), null));
-        when(mockPostBuilder3.perform()).thenReturn(
-                new FcrepoResponse(commitUri, 201, emptyMap(), null));
+        final CloseableHttpResponse mockTxBeginResponse = mock(CloseableHttpResponse.class);
+        final Header mockTxHeader = mock(Header.class);
+        final StatusLine beginTxStatusLine = mock(StatusLine.class);
+        when(mockTxBeginResponse.getFirstHeader(LOCATION)).thenReturn(mockTxHeader);
+        when(mockTxBeginResponse.getStatusLine()).thenReturn(beginTxStatusLine);
+        when(beginTxStatusLine.getStatusCode()).thenReturn(SC_CREATED);
+        when(mockTxHeader.getValue()).thenReturn(txUrl);
 
-        when(mockHeadBuilder.perform()).thenReturn(new FcrepoResponse(uri, 200, emptyMap(), null));
-        when(mockClient.get(eq(uri))).thenReturn(mockGetBuilder2);
-        when(mockClient.get(eq(uri2))).thenReturn(mockGetBuilder3);
-        when(mockGetBuilder2.perform()).thenReturn(
-            new FcrepoResponse(uri, status, singletonMap(CONTENT_TYPE, singletonList(TestUtils.RDF_XML)), body));
-        when(mockGetBuilder3.perform()).thenThrow(
-            new FcrepoOperationFailedException(uri2, 400, "Bad Request"));
+        final CloseableHttpResponse mockTxCommitResponse = mock(CloseableHttpResponse.class);
+        final StatusLine commitTxStatusLine = mock(StatusLine.class);
+        when(mockTxCommitResponse.getStatusLine()).thenReturn(commitTxStatusLine);
+        when(commitTxStatusLine.getStatusCode()).thenReturn(SC_NO_CONTENT);
+
+        final CloseableHttpResponse mockHead2Response = mock(CloseableHttpResponse.class);
+        final CloseableHttpResponse mockGet2Response = mock(CloseableHttpResponse.class);
+        when(mockHeadResponse.getFirstHeader(LOCATION)).thenReturn(null);
+        when(mockHead2Response.getFirstHeader(LOCATION)).thenReturn(null);
+        when(mockHeadResponse.getStatusLine()).thenReturn(mockStatusLine1);
+        when(mockGetResponse.getStatusLine()).thenReturn(mockStatusLine1);
+        when(mockHead2Response.getStatusLine()).thenReturn(mockStatusLine1);
+        when(mockStatusLine1.getStatusCode()).thenReturn(SC_OK);
+
+        when(mockGet2Response.getStatusLine()).thenReturn(mockStatusLine2);
+        when(mockStatusLine2.getStatusCode()).thenReturn(SC_BAD_REQUEST);
+
+        when(mockGetResponse.getFirstHeader(CONTENT_TYPE)).thenReturn(mockRdfXmlHeader);
+        when(mockGetResponse.getEntity()).thenReturn(mockEntity1);
+        when(mockEntity1.getContent()).thenReturn(body);
+
+        // None of these objects are binaries so there are no "describedby" link headers.
+        when(mockHeadResponse.getHeaders("Link")).thenReturn(emptyHeaders);
+        when(mockHead2Response.getHeaders("Link")).thenReturn(emptyHeaders);
+        when(mockGetResponse.getHeaders("Link")).thenReturn(emptyHeaders);
+        when(mockGet2Response.getHeaders("Link")).thenReturn(emptyHeaders);
+
+        // When the request fails with the 400, the transaction is rolled back so a Delete operation is called.
+        final StatusLine mockStatusLine3 = mock(StatusLine.class);
+        when(mockDeleteResponse.getStatusLine()).thenReturn(mockStatusLine3);
+        when(mockStatusLine3.getStatusCode()).thenReturn(SC_NO_CONTENT);
+
+        when(mockHttpClient.execute(any(HttpRequestBase.class), any(HttpClientContext.class))).thenAnswer(I -> {
+            final HttpRequestBase req = I.getArgument(0);
+            if (req.getMethod().equalsIgnoreCase("head")) {
+                if (req.getURI().equals(uri)) {
+                    return mockHeadResponse;
+                } else if (req.getURI().equals(uri2)) {
+                    return mockHead2Response;
+                }
+            } else if (req.getMethod().equalsIgnoreCase("get")) {
+                if (req.getURI().equals(uri)) {
+                    return mockGetResponse;
+                } else if (req.getURI().equals(uri2)) {
+                    return mockGet2Response;
+                }
+            } else if (req.getMethod().equalsIgnoreCase("post")) {
+                if (req.getURI().equals(beginUri)) {
+                    return mockTxBeginResponse;
+                } else if (req.getURI().equals(commitUri)) {
+                    return mockTxCommitResponse;
+                } else if (req.getURI().equals(rollbackUri)) {
+                    return mockDeleteResponse;
+                }
+            }
+            return null;
+        });
 
         testProducer.process(testExchange);
 
@@ -735,28 +899,28 @@ public class FcrepoProducerTest {
         assertEquals(TestUtils.rdfXml, testExchange.getIn().getBody(String.class));
 
         testExchange.getIn().setHeader(HTTP_METHOD, "GET");
-        testExchange.getIn().setHeader(ACCEPT_CONTENT_TYPE, N_TRIPLES);
+        testExchange.getIn().setHeader(ACCEPT, N_TRIPLES);
         testExchange.getIn().setHeader(FCREPO_IDENTIFIER, path2);
         testExchange.setUnitOfWork(uow);
         testProducer.process(testExchange);
+
     }
 
     @Test
     public void testNoStreamCaching() throws Exception {
-        final URI uri = create(TestUtils.baseUrl);
         final int status = 200;
         final ByteArrayInputStream body = new ByteArrayInputStream(TestUtils.rdfXml.getBytes());
-        final FcrepoResponse headResponse = new FcrepoResponse(uri, 200, emptyMap(), null);
-        final FcrepoResponse getResponse = new FcrepoResponse(uri, status,
-                singletonMap(CONTENT_TYPE, singletonList(TestUtils.RDF_XML)), body);
 
         init();
 
         testExchange.getIn().setHeader(FCREPO_IDENTIFIER, "/foo");
         testExchange.setProperty(DISABLE_HTTP_STREAM_CACHE, true);
 
-        when(mockHeadBuilder.perform()).thenReturn(headResponse);
-        when(mockGetBuilder.perform()).thenReturn(getResponse);
+        setUpHeadMocks();
+        setUpGetMocks();
+        when(mockStatusLine1.getStatusCode()).thenReturn(SC_OK);
+        when(mockEntity1.getContent()).thenReturn(body);
+        when(mockGetResponse.getFirstHeader(CONTENT_TYPE)).thenReturn(mockRdfXmlHeader);
 
         testProducer.process(testExchange);
 
@@ -767,13 +931,9 @@ public class FcrepoProducerTest {
 
     @Test
     public void testStreamCaching() throws Exception {
-        final URI uri = create(TestUtils.baseUrl);
         final int status = 200;
         final String rdfConcat = StringUtils.repeat(TestUtils.rdfXml, 10000);
         final ByteArrayInputStream body = new ByteArrayInputStream(rdfConcat.getBytes());
-        final FcrepoResponse headResponse = new FcrepoResponse(uri, 200, emptyMap(), null);
-        final FcrepoResponse getResponse = new FcrepoResponse(uri, status,
-                singletonMap(CONTENT_TYPE, singletonList(TestUtils.RDF_XML)), body);
 
         init();
 
@@ -784,8 +944,11 @@ public class FcrepoProducerTest {
         testExchange.getContext().getStreamCachingStrategy().setBufferSize(256);
         testExchange.getContext().setStreamCaching(true);
 
-        when(mockHeadBuilder.perform()).thenReturn(headResponse);
-        when(mockGetBuilder.perform()).thenReturn(getResponse);
+        setUpHeadMocks();
+        setUpGetMocks();
+        when(mockStatusLine1.getStatusCode()).thenReturn(SC_OK);
+        when(mockEntity1.getContent()).thenReturn(body);
+        when(mockGetResponse.getFirstHeader(CONTENT_TYPE)).thenReturn(mockRdfXmlHeader);
 
         testProducer.process(testExchange);
 
